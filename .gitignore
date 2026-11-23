@@ -221,3 +221,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local Relate Single File databases and transient files
+*.rl
+*.rl-*
+*.rl.*

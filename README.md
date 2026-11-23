@@ -1,2 +1,52 @@
-# varkhard-intelligence-graph.
-VARKHARD Intelligence Graph — Graph-powered AI agent security system for mapping relationships, monitoring interactions, and detecting risks using Neo4j.
+# VARKHARD Intelligence Graph
+
+VARKHARD Intelligence Graph is a Relate by Neo4j Hackathon MVP for tracing AI agent access and explaining security risks. It stores granted permissions, approved permissions, and observed interactions in an embedded graph. The included demo uses five fictional agents and four fictional resources. The external outbox is a simulated graph node.
+
+## Install and run
+
+Run these commands from the repository root with Python 3.10 or later.
+
+```sh
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[test]'
+python -m varkhard seed
+python -m varkhard analyze
+python -m pytest
+```
+
+`seed` creates `data/varkhard-graph.rl` and adds the synthetic data. Repeating it with the same data leaves the graph unchanged. `analyze` opens the existing file in read-only mode and emits a JSON array of findings. Pass `--db` before the command to use another `.rl` file.
+
+```sh
+python -m varkhard --db data/demo.rl seed
+python -m varkhard --db data/demo.rl analyze
+```
+
+## Findings
+
+Every finding includes a rule ID, an explanation, and evidence from the graph. Timestamps in the evidence use ISO 8601 UTC. The seeded demo produces one finding for each rule.
+
+| Rule | What it checks | Demo evidence |
+| --- | --- | --- |
+| `unauthorized_access` | An observed interaction has no current grant matching its agent, resource, and action. A denied event records an attempt. | `interaction-catalog-write-denied` records a write attempt from the Preview Agent, whose grant covers reading the catalog. |
+| `excessive_permission` | A grant has no matching entry in the approved least-privilege baseline. An unused grant can be valid when the baseline approves it. | `grant-archive-delete` allows the Maintenance Agent to delete from an archive whose baseline allows only read and write. |
+| `suspicious_chain` | Linked successful interactions show an agent reading a restricted resource, handing it off to another agent, and that recipient exporting to an external resource. The three event timestamps must strictly increase and span at most 600 seconds. | `interaction-ledger-read` → `interaction-ledger-handoff` → `interaction-outbox-export`. The related actions occur within 180 seconds and are individually granted. |
+
+The MVP evaluates interactions against the grants currently stored in the file. Assessing a historical event against the policy in effect at the time would require permission history. Treat the baseline as complete when interpreting excess grants. The chain rule uses explicit event links and reports a pattern for review based on event metadata.
+
+## How it uses Relate
+
+The Python core pins `relate-db==1.2.0` and opens `data/varkhard-graph.rl` with embedded Relate Single File. Parameterized Cypher persists and queries the entities and their relationships.
+
+```text
+(AIAgent)-[:HAS_PERMISSION]->(Permission)-[:ON_RESOURCE]->(Resource)
+(AIAgent)-[:PERFORMED]->(Interaction)-[:TARGETS]->(Resource)
+(Interaction)-[:HANDED_TO]->(AIAgent)
+(Interaction)-[:TRIGGERS]->(Interaction)
+```
+
+Grant and baseline records are both `Permission` nodes, each tagged with its kind. The two interaction relationships represent the recipient of a handoff and explicit links from parent events to child events. The interaction model stores `occurred_at` as Unix seconds. Detection traverses these relationships to find the agent, resource scope, and ordered chain behind each explanation.
+
+Relate locks the Single File while a writer has it open. Wait for the writer to close before opening the same file for analysis. Analysis uses `read_only=True` on an existing file. Multiple read-only connections can coexist, and a writer can reopen the file once the readers close. Each ingest commits a batch and calls `flush()` to checkpoint the committed data. When embedding `GraphStore` in Python, open it, perform queries or writes, and close it on the same thread. Use its context manager to release the connection promptly.
+
+The automated tests use temporary Relate files and exercise persistence after closing and reopening the database. See the [Relate Python API reference](https://relatedb.ai/docs/reference/api/python/).
