@@ -1,4 +1,4 @@
-import { ArrowUpRight, Crosshair, History, KeyRound, Link2 } from 'lucide-react'
+import { Crosshair, History, KeyRound, Link2 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { Dashboard, EvidenceValue, Finding, GraphNode, Interaction, Permission } from './api'
 
@@ -53,7 +53,7 @@ function PermissionDetails({ permission, scope, onSelect }: {
     <div className="record-row">
       <div><strong>{permission.action}</strong><span>{scope}</span></div>
       <span className="record-tag">{permission.kind}</span>
-      {onSelect && <button type="button" className="icon-button" onClick={onSelect} aria-label={`Inspect permission ${permission.id}`}><ArrowUpRight size={15} /></button>}
+      {onSelect && <button type="button" className="icon-button" onClick={onSelect} aria-label={`Inspect permission ${permission.id}`}><Crosshair size={15} aria-hidden="true" /></button>}
     </div>
   )
 }
@@ -68,7 +68,7 @@ function InteractionDetails({ interaction, scope, onSelect }: {
     <div className="record-row">
       <div><strong>{interaction.action}</strong><span>{scope}</span><time dateTime={time}>{time}</time></div>
       <span className={`record-tag ${interaction.outcome === 'denied' ? 'record-denied' : ''}`}>{interaction.outcome}</span>
-      {onSelect && <button type="button" className="icon-button" onClick={onSelect} aria-label={`Inspect action ${interaction.id}`}><ArrowUpRight size={15} /></button>}
+      {onSelect && <button type="button" className="icon-button" onClick={onSelect} aria-label={`Inspect action ${interaction.id}`}><Crosshair size={15} aria-hidden="true" /></button>}
     </div>
   )
 }
@@ -173,7 +173,7 @@ export function Inspector({ data, node, finding, onNodeSelect }: {
     <section className="panel inspector" id="inspector" aria-labelledby="inspector-title">
       <header className="panel-heading inspector-heading">
         <h2 id="inspector-title"><Crosshair size={19} aria-hidden="true" /> Inspector</h2>
-        {(finding || node) && <a href="#graph" className="text-button">View graph <ArrowUpRight size={13} aria-hidden="true" /></a>}
+        {(finding || node) && <a href="#graph" className="text-button">View graph</a>}
       </header>
       <div className="inspector-content">
         {finding && (

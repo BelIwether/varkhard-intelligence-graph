@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
-  ArrowUpRight, Bot, Box, Database, GitFork, History, KeyRound, Link2,
+  Bot, Box, Database, GitFork, History, KeyRound, Link2,
   LoaderCircle, Network, RefreshCw, ShieldAlert, ShieldCheck, TriangleAlert,
 } from 'lucide-react'
 import { getDashboard } from './api'
@@ -127,7 +127,7 @@ function DashboardContent({ data }: { data: Dashboard }) {
             </ul>
             {selection && (
               <div className="selection-actions">
-                <a className="text-button inspect-selection" href="#inspector">Inspect selection <ArrowUpRight size={13} aria-hidden="true" /></a>
+                <a className="text-button inspect-selection" href="#inspector">Inspect selection</a>
                 <button className="text-button" type="button" onClick={() => setSelection(null)}>Clear highlight</button>
               </div>
             )}
