@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "varkhard-intelligence-graph"
+version = "0.1.0"
+description = "Agent security analysis on an embedded Relate graph"
+requires-python = ">=3.10"
+dependencies = ["relate-db==1.2.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["varkhard"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

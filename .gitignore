@@ -221,3 +221,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Relate Single File databases and transient files. Track the synthetic fixture.
+*.rl
+*.rl-*
+*.rl.*
+!/examples/synthetic-demo.rl
