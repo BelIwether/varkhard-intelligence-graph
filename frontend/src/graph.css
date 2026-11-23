@@ -1,0 +1,235 @@
+.intelligence-graph {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.intelligence-graph .react-flow {
+  --xy-background-color: #111217;
+  --xy-controls-button-background-color: #1d1f26;
+  --xy-controls-button-background-color-hover: #282b34;
+  --xy-controls-button-color: #dde0e8;
+  --xy-controls-button-color-hover: #fff;
+  --xy-controls-button-border-color: #363943;
+  --xy-controls-box-shadow: none;
+}
+
+.intelligence-graph .react-flow__controls {
+  bottom: 12px;
+  right: 12px;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid #373943;
+  border-radius: 8px;
+}
+
+.intelligence-graph .react-flow__controls-button {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+}
+
+.intelligence-graph .react-flow__controls-button:last-child {
+  border-bottom: 0;
+}
+
+.intelligence-graph .react-flow__controls-button:focus-visible {
+  outline: 2px solid #f4f4fa;
+  outline-offset: -3px;
+}
+
+.intelligence-graph .react-flow__handle {
+  width: 4px;
+  height: 4px;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.graph-record {
+  width: 166px;
+  height: 46px;
+}
+
+.graph-record--permission,
+.graph-record--interaction {
+  width: 143px;
+  height: 30px;
+}
+
+.graph-record button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 100%;
+  padding: 0 8px;
+  appearance: none;
+  border: 1px solid #3c404b;
+  border-radius: 7px;
+  background: #20222a;
+  color: #ebeef4;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: left;
+  cursor: grab;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.intelligence-graph .react-flow__node.dragging button {
+  cursor: grabbing;
+}
+
+.graph-record button:hover,
+.graph-record button:focus-visible {
+  border-color: #a7afbf;
+  background: #2c303a;
+  color: #fff;
+}
+
+.graph-record button:focus-visible {
+  outline: 2px solid #d7d9e3;
+  outline-offset: 2px;
+}
+
+.graph-record__icon {
+  display: grid;
+  flex: 0 0 27px;
+  place-items: center;
+  height: 27px;
+  border-radius: 5px;
+  background: #30343f;
+  color: #d2d9e7;
+}
+
+.graph-record__icon svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.8;
+}
+
+.graph-record--resource button {
+  background: #1c2228;
+  border-color: #3a464f;
+}
+
+.graph-record--resource .graph-record__icon {
+  background: #29353d;
+  color: #c3ced7;
+}
+
+.graph-record--permission button,
+.graph-record--interaction button {
+  gap: 6px;
+  padding-inline: 7px;
+  border-radius: 5px;
+  color: #d7dbe4;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.graph-record--permission button {
+  background: #1b1d25;
+}
+
+.graph-record--interaction button {
+  background: #202027;
+}
+
+.graph-record--permission .graph-record__icon,
+.graph-record--interaction .graph-record__icon {
+  flex-basis: 17px;
+  height: 17px;
+  border-radius: 0;
+  background: transparent;
+  color: #adb4c2;
+}
+
+.graph-record--permission svg,
+.graph-record--interaction svg {
+  width: 13px;
+  height: 13px;
+}
+
+.graph-record__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-record--agent .graph-record__label,
+.graph-record--resource .graph-record__label,
+.intelligence-graph--compact .graph-record__label {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.intelligence-graph--compact .graph-record {
+  width: 128px;
+}
+
+.intelligence-graph--compact .graph-record--permission,
+.intelligence-graph--compact .graph-record--interaction {
+  width: 102px;
+}
+
+.intelligence-graph--compact .graph-record button {
+  gap: 6px;
+  padding-inline: 5px;
+  font-size: 13px;
+}
+
+.intelligence-graph--compact .graph-record--agent .graph-record__icon,
+.intelligence-graph--compact .graph-record--resource .graph-record__icon {
+  flex-basis: 22px;
+  height: 22px;
+}
+
+.intelligence-graph--compact .graph-record--permission button,
+.intelligence-graph--compact .graph-record--interaction button {
+  line-height: 1.05;
+}
+
+.graph-record--muted button {
+  opacity: 0.4;
+}
+
+.graph-record--muted button:hover,
+.graph-record--muted button:focus-visible {
+  opacity: 1;
+}
+
+.graph-record--entity button {
+  border-color: #98a8bf;
+  background: #282d39;
+  color: #f9faff;
+}
+
+.graph-record--finding button {
+  border-color: #e96a73;
+  background: #3c242c;
+  color: #fff0f1;
+}
+
+.graph-record--finding .graph-record__icon {
+  background: #53303a;
+  color: #ffabb0;
+}
+
+.graph-record--finding.graph-record--permission .graph-record__icon,
+.graph-record--finding.graph-record--interaction .graph-record__icon {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .graph-record button {
+    transition: none;
+  }
+}
