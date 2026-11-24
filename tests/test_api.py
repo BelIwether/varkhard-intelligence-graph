@@ -25,6 +25,13 @@ def _client(application=app):
     return AsyncClient(transport=ASGITransport(app=application), base_url="http://dashboard.test")
 
 
+def _symlink(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"Symbolic links are unavailable: {exc}")
+
+
 async def test_dashboard_returns_relate_records_and_unmodified_core_evidence():
     before = _DEMO.read_bytes()
     with GraphStore(_DEMO, read_only=True) as store:
@@ -115,6 +122,55 @@ async def test_configured_file_is_read_on_each_request(tmp_path, monkeypatch):
             {"id": "new-agent", "name": "New agent"},
             {"id": "shared-id", "name": "Custom agent"},
         ]
+
+
+async def test_snapshot_provenance_follows_the_opened_symlink_target(tmp_path):
+    alias = tmp_path / "active.rl"
+    custom = tmp_path / _DEMO.name
+    _symlink(alias, _DEMO)
+    with GraphStore(custom) as store:
+        store.ingest(agents=[Agent("custom", "Custom agent")])
+
+    async with _client(create_app(alias)) as client:
+        for target, expected_demo in ((_DEMO, True), (custom, False), (_DEMO, True)):
+            if alias.readlink() != target:
+                alias.unlink()
+                _symlink(alias, target)
+
+            response = await client.get("/api/graph")
+            assert response.status_code == 200
+            assert response.headers["cache-control"] == "no-store"
+            graph = response.json()
+            assert graph["source"] == {
+                "filename": target.name,
+                "read_only": True,
+                "synthetic_demo": expected_demo,
+            }
+            expected_agents = {agent.id for agent in DEMO_AGENTS} if expected_demo else {"custom"}
+            assert {agent["id"] for agent in graph["agents"]} == expected_agents
+
+
+async def test_circular_snapshot_symlink_returns_retryable_errors_and_recovers(tmp_path):
+    alias = tmp_path / "active.rl"
+    target = tmp_path / "target.rl"
+    _symlink(alias, Path(target.name))
+    _symlink(target, Path(alias.name))
+
+    async with _client(create_app(alias)) as client:
+        for endpoint in ("graph", "findings", "agents", "resources"):
+            response = await client.get(f"/api/{endpoint}")
+            assert response.status_code == 503
+            assert response.headers["cache-control"] == "no-store"
+            assert response.json() == {"detail": "The Relate graph is unavailable. Check the configured Single File."}
+
+        assert alias.readlink() == Path(target.name)
+        assert target.readlink() == Path(alias.name)
+        alias.unlink()
+        _symlink(alias, _DEMO)
+        response = await client.get("/api/graph")
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+        assert response.json()["source"]["synthetic_demo"] is True
 
 
 async def test_locked_file_returns_retryable_error_and_recovers(tmp_path):

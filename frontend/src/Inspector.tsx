@@ -64,6 +64,7 @@ type StepRecords = {
   nodes: NodesById
   interactions: ReadonlyMap<string, Interaction>
   permissions: ReadonlyMap<string, Permission>
+  handoffRecipients: ReadonlyMap<string, GraphNode | null>
 }
 
 function labelFor(key: string, rule?: Finding['rule_id']) {
@@ -124,7 +125,7 @@ function EvidenceFields({ evidence, nodes, rule }: {
   )
 }
 
-function stepFacts(step: InvestigationStep, { nodes, interactions, permissions }: StepRecords) {
+function stepFacts(step: InvestigationStep, { nodes, interactions, permissions, handoffRecipients }: StepRecords) {
   const node = step.record_node_id ? nodes.get(step.record_node_id) : undefined
   const kind = node?.kind === 'interaction' || node?.kind === 'permission' ? node.kind : 'unknown'
   const interaction = node?.kind === 'interaction' ? interactions.get(node.record_id) : undefined
@@ -136,9 +137,8 @@ function stepFacts(step: InvestigationStep, { nodes, interactions, permissions }
     recordId: node?.record_id ?? step.record_node_id,
     agent: record ? nodes.get(`agent:${record.agent_id}`)?.label ?? record.agent_id : null,
     resource: record ? nodes.get(`resource:${record.resource_id}`)?.label ?? record.resource_id : null,
-    recipient: interaction?.recipient_id
-      ? nodes.get(`agent:${interaction.recipient_id}`)?.label ?? interaction.recipient_id
-      : null,
+    handoff: interaction?.action === 'handoff' ? interaction : undefined,
+    recipient: node ? handoffRecipients.get(node.id) : undefined,
     action: record?.action ?? step.action,
     occurredAt: kind === 'permission' ? null : interaction?.occurred_at ?? step.occurred_at,
     outcome: kind === 'permission' ? null : interaction?.outcome ?? step.outcome,
@@ -147,6 +147,25 @@ function stepFacts(step: InvestigationStep, { nodes, interactions, permissions }
 }
 
 type StepFacts = ReturnType<typeof stepFacts>
+
+function HandoffRecipient({ interaction, recipient }: {
+  interaction: Interaction
+  recipient?: GraphNode | null
+}) {
+  return (
+    <div>
+      <dt>{interaction.outcome === 'denied' ? 'Intended recipient' : 'Recipient'}</dt>
+      <dd className="inspect-reference">
+        {recipient ? recipient.label : (
+          <>
+            <span>Unverified</span>
+            {interaction.recipient_id && <span>Declared ID <code>{interaction.recipient_id}</code></span>}
+          </>
+        )}
+      </dd>
+    </div>
+  )
+}
 
 function StepRecord({ facts }: { facts: StepFacts }) {
   const occurredAt = facts.occurredAt === null ? null : formatTime(facts.occurredAt)
@@ -168,7 +187,7 @@ function StepRecord({ facts }: { facts: StepFacts }) {
             {facts.outcome ?? 'Unavailable'}
           </dd>
         </div>
-        {facts.recipient && <div><dt>Recipient</dt><dd>{facts.recipient}</dd></div>}
+        {facts.handoff && <HandoffRecipient interaction={facts.handoff} recipient={facts.recipient} />}
         <div className="inspect-step-time">
           <dt>{facts.kind === 'permission' ? 'Event time' : 'Time (UTC)'}</dt>
           <dd>{occurredAt ? <time className="inspect-time" dateTime={occurredAt}>{occurredAt}</time> : 'Unavailable'}</dd>
@@ -433,25 +452,30 @@ function RecordRow({ title, scope, recordId, tag, time, denied, node, onNodeSele
   )
 }
 
-function NodeDetails({ data, node, nodes, onNodeSelect }: {
+function NodeDetails({ data, node, records, ambiguousTriggerIds, onNodeSelect }: {
   data: Dashboard
   node: GraphNode
-  nodes: NodesById
+  records: StepRecords
+  ambiguousTriggerIds: ReadonlySet<string>
   onNodeSelect: (node: GraphNode) => void
 }) {
   const id = node.record_id
+  const { nodes, handoffRecipients } = records
+  const selectedEvent = node.kind === 'interaction' ? records.interactions.get(id) : undefined
+  const receivesHandoff = (event: Interaction) => handoffRecipients.get(`interaction:${event.id}`)?.id === node.id
   const permissions = data.permissions.filter((permission) =>
     (node.kind === 'agent' && permission.agent_id === id)
     || (node.kind === 'resource' && permission.resource_id === id)
     || (node.kind === 'permission' && permission.id === id))
   const interactions = data.interactions.filter((interaction) =>
-    (node.kind === 'agent' && (interaction.agent_id === id || interaction.recipient_id === id))
+    (node.kind === 'agent' && (interaction.agent_id === id || receivesHandoff(interaction)))
     || (node.kind === 'resource' && interaction.resource_id === id)
     || (node.kind === 'interaction' && interaction.id === id))
     .sort((first, second) => second.occurred_at - first.occurred_at)
 
   const relationships = data.edges.flatMap((edge) => {
     if (edge.source !== node.id && edge.target !== node.id) return []
+    if (edge.kind === 'HANDED_TO' && handoffRecipients.get(edge.source)?.id !== edge.target) return []
     const outgoing = edge.source === node.id
     const other = nodes.get(outgoing ? edge.target : edge.source)
     return other ? [{ edge, other, outgoing }] : []
@@ -467,6 +491,11 @@ function NodeDetails({ data, node, nodes, onNodeSelect }: {
         <code>{id}</code>
         {resource && (
           <EvidenceFields evidence={{ classification: resource.classification, boundary: resource.boundary }} nodes={nodes} />
+        )}
+        {selectedEvent?.action === 'handoff' && (
+          <dl className="inspect-fields">
+            <HandoffRecipient interaction={selectedEvent} recipient={handoffRecipients.get(node.id)} />
+          </dl>
         )}
       </div>
       {node.kind !== 'interaction' && (
@@ -500,7 +529,7 @@ function NodeDetails({ data, node, nodes, onNodeSelect }: {
           {interactions.length ? (
             <ul className="inspect-records">
               {interactions.map((interaction) => {
-                const showAgent = node.kind === 'resource' || (node.kind === 'agent' && interaction.recipient_id === id)
+                const showAgent = node.kind === 'resource' || (node.kind === 'agent' && receivesHandoff(interaction))
                 const scope = showAgent
                   ? nodes.get(`agent:${interaction.agent_id}`)?.label ?? interaction.agent_id
                   : nodes.get(`resource:${interaction.resource_id}`)?.label ?? interaction.resource_id
@@ -530,7 +559,10 @@ function NodeDetails({ data, node, nodes, onNodeSelect }: {
               <li key={edge.id}>
                 <button type="button" onClick={() => onNodeSelect(other)}>
                   <span>
-                    <span className="inspect-muted">{outgoing ? 'Outgoing' : 'Incoming'} · {relationshipLabels[edge.kind]}</span>
+                    <span className="inspect-muted">
+                      {outgoing ? 'Outgoing' : 'Incoming'} · {ambiguousTriggerIds.has(edge.id)
+                        ? 'Recorded trigger link (order unknown)' : relationshipLabels[edge.kind]}
+                    </span>
                     <strong>{other.label}</strong>
                   </span>
                   <ArrowUpRight size={16} aria-hidden="true" />
@@ -544,19 +576,32 @@ function NodeDetails({ data, node, nodes, onNodeSelect }: {
   )
 }
 
-export function Inspector({ data, node, finding, hidden, onNodeSelect, activeStepIndex, onStepSelect }: {
+export function Inspector({ data, node, finding, hidden, ambiguousTriggerIds, onNodeSelect, activeStepIndex, onStepSelect }: {
   data: Dashboard
   node?: GraphNode
   finding?: Finding
   hidden?: boolean
+  ambiguousTriggerIds: ReadonlySet<string>
   onNodeSelect: (node: GraphNode) => void
 } & StepSelection) {
   const nodes = useMemo(() => new Map(data.nodes.map((entry) => [entry.id, entry])), [data.nodes])
+  const handoffRecipients = useMemo(() => {
+    const recipients = new Map<string, GraphNode | null>()
+    for (const { kind, source, target } of data.edges) {
+      if (kind !== 'HANDED_TO' || nodes.get(source)?.kind !== 'interaction') continue
+      const recipient = nodes.get(target)
+      if (recipient?.kind !== 'agent') continue
+      const previous = recipients.get(source)
+      recipients.set(source, previous === undefined || previous?.id === target ? recipient : null)
+    }
+    return recipients
+  }, [data.edges, nodes])
   const records = useMemo(() => ({
     nodes,
     interactions: new Map(data.interactions.map((record) => [record.id, record])),
     permissions: new Map(data.permissions.map((record) => [record.id, record])),
-  }), [nodes, data.interactions, data.permissions])
+    handoffRecipients,
+  }), [nodes, data.interactions, data.permissions, handoffRecipients])
   const edges = useMemo(() => new Map(data.edges.map((entry) => [entry.id, entry])), [data.edges])
   const shortcuts = useMemo(() => data.nodes.filter((entry) => entry.kind === 'agent').slice(0, 3), [data.nodes])
 
@@ -579,7 +624,7 @@ export function Inspector({ data, node, finding, hidden, onNodeSelect, activeSte
             onStepSelect={onStepSelect}
           />
         )}
-        {node && <NodeDetails data={data} node={node} nodes={nodes} onNodeSelect={onNodeSelect} />}
+        {node && <NodeDetails data={data} node={node} records={records} ambiguousTriggerIds={ambiguousTriggerIds} onNodeSelect={onNodeSelect} />}
         {!node && !finding && (
           <>
             <div className="inspect-empty">

@@ -102,6 +102,46 @@ def test_unauthorized_trace_keeps_the_flagged_outcome_separate_from_the_origin(t
     ]
 
 
+@pytest.mark.parametrize("damage", [
+    pytest.param(None, id="verified-recipient"),
+    pytest.param(
+        "MATCH (:Interaction {id: 'attempt'})-[link:HANDED_TO]->(:AIAgent) DELETE link",
+        id="missing-recipient-link",
+    ),
+    pytest.param(
+        "MATCH (event:Interaction {id: 'attempt'}), (agent:AIAgent {id: 'other'}) "
+        "CREATE (event)-[:HANDED_TO]->(agent)",
+        id="ambiguous-recipient-link",
+    ),
+])
+def test_denied_handoff_trace_keeps_only_the_verified_recipient(tmp_path, damage):
+    path = tmp_path / "handoff.rl"
+    event = Interaction("attempt", "sender", "resource", "handoff", "denied", 120, recipient_id="recipient")
+    with GraphStore(path) as store:
+        store.ingest(
+            agents=[Agent("sender", "Sender"), Agent("recipient", "Recipient"), Agent("other", "Other agent")],
+            resources=[Resource("resource", "Test Resource", "internal", "internal")],
+            interactions=[event],
+        )
+        if damage is not None:
+            store.query(damage)
+        graph = read_graph(store, path.name)
+
+    assert graph.interactions == [event]
+    trace = _event_finding(graph, event.id).investigation
+    assert trace.origin == trace.trigger == trace.steps[0]
+    assert trace.trigger.outcome == "denied"
+    assert trace.complete == (damage is None)
+
+    expected_nodes = {"agent:sender", "resource:resource", "interaction:attempt"}
+    expected_kinds = {"PERFORMED", "TARGETS"}
+    if damage is None:
+        expected_nodes.add("agent:recipient")
+        expected_kinds.add("HANDED_TO")
+    assert set(trace.trigger.node_ids) == set(trace.affected_node_ids) == expected_nodes
+    assert {edge.kind for edge in graph.edges if edge.id in trace.edge_ids} == expected_kinds
+
+
 def test_missing_parent_edge_retains_only_the_verified_event(tmp_path):
     path = tmp_path / "missing-parent.rl"
     with GraphStore(path) as store:
@@ -200,6 +240,9 @@ def test_suspicious_trace_never_reconstructs_a_removed_relationship(tmp_path, ki
         step.record_node_id for step in finding.investigation.steps
     ]
     assert partial.edge_ids == [edge_id for edge_id in finding.investigation.edge_ids if edge_id != removed.id]
+    if kind == "HANDED_TO":
+        handoff = next(step for step in partial.steps if step.record_node_id == removed.source)
+        assert removed.target not in handoff.node_ids
 
 
 @pytest.mark.parametrize("damage", [

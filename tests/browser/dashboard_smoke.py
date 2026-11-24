@@ -3,8 +3,10 @@
 import argparse
 import re
 from copy import deepcopy
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from playwright.sync_api import APIResponse, Browser, ConsoleMessage, Locator, Page, Response, Route, expect, sync_playwright
 
@@ -301,6 +303,7 @@ def check_evidence_timeline(page: Page, finding: dict, data: dict) -> None:
     permissions = {item["id"]: item for item in data["permissions"]}
     agents = {item["id"]: item["name"] for item in data["agents"]}
     resources = {item["id"]: item["name"] for item in data["resources"]}
+    recipients = {edge["source"]: edge["target"] for edge in data["edges"] if edge["kind"] == "HANDED_TO"}
     steps = finding["investigation"]["steps"]
     events_in_trace = [step for step in steps if step["record_node_id"].startswith("interaction:")]
     permissions_in_trace = [step for step in steps if step["record_node_id"].startswith("permission:")]
@@ -317,10 +320,13 @@ def check_evidence_timeline(page: Page, finding: dict, data: dict) -> None:
         expect(row.get_by_text(record_id, exact=True)).to_be_visible()
         expect(row.locator("time")).to_have_attribute("datetime", timestamp)
         values = [agents[record["agent_id"]], resources[record["resource_id"]], record["action"], record["outcome"]]
-        if record["recipient_id"]:
-            values.append(agents[record["recipient_id"]])
         for value in values:
             expect(row.get_by_text(value, exact=True).first).to_be_visible()
+        if record["action"] == "handoff":
+            label = "Intended recipient" if record["outcome"] == "denied" else "Recipient"
+            target = recipients.get(step["record_node_id"])
+            name = agents[target.split(":", 1)[1]] if target else None
+            check_recipient_field(row, label, name, record["recipient_id"])
     assert timestamps == sorted(timestamps), timestamps
 
     for step in permissions_in_trace:
@@ -333,6 +339,17 @@ def check_evidence_timeline(page: Page, finding: dict, data: dict) -> None:
             value = row.locator("dl > div").filter(has=page.get_by_text(field, exact=True)).locator("dd")
             expect(value).to_have_text("Unavailable")
         expect(row.locator("time")).to_have_count(0)
+
+
+def check_recipient_field(scope: Locator, label: str, name: str | None, declaration: str | None) -> None:
+    value = scope.get_by_text(label, exact=True).locator("xpath=following-sibling::dd")
+    if name is not None:
+        expect(value).to_have_text(name)
+    else:
+        expect(value.get_by_text("Unverified", exact=True)).to_be_visible()
+        if declaration is not None:
+            expect(value).to_contain_text("Declared ID")
+            expect(value.locator("code")).to_have_text(declaration)
 
 
 def check_record_details(page: Page, finding: dict, data: dict) -> None:
@@ -830,6 +847,116 @@ def check_incomplete_evidence(browser: Browser, url: str, data: dict) -> None:
     print("Verified incomplete evidence warning with usable findings and with no verified records.")
 
 
+def check_handoff_recipient(browser: Browser, url: str) -> None:
+    from varkhard.dashboard import read_graph
+    from varkhard.demo import seed_demo
+    from varkhard.store import GraphStore
+
+    event_id = "interaction-ledger-handoff"
+    recipient_id = "agent-relay"
+    with TemporaryDirectory(prefix="varkhard-handoff-browser-") as directory:
+        db = Path(directory) / "handoff.rl"
+
+        def read_fixture() -> dict:
+            with GraphStore(db, read_only=True) as store:
+                return asdict(read_graph(store, db.name))
+
+        with GraphStore(db) as store:
+            seed_demo(store)
+            store.query("MATCH (grant:Permission {id: 'grant-ledger-handoff'}) DETACH DELETE grant")
+            store.query("MATCH (event:Interaction {id: $id}) SET event.outcome = 'denied'", {"id": event_id})
+        verified = read_fixture()
+        with GraphStore(db) as store:
+            store.query(
+                "MATCH (:Interaction {id: $id})-[link:HANDED_TO]->(:AIAgent) DELETE link", {"id": event_id},
+            )
+        partial = read_fixture()
+
+    for snapshot, name in ((verified, "Relay Agent"), (partial, None)):
+        page = browser.new_page(reduced_motion="reduce")
+        errors = watch_errors(page)
+        page.route("**/api/graph", lambda route: route.fulfill(json=snapshot))
+        page.goto(f"{url}/")
+        finding = next(item for item in snapshot["findings"] if item["evidence"].get("interaction_id") == event_id)
+        # This snapshot has multiple Unauthorized Access findings. Select the finding for the handoff's scope.
+        finding_button = page.locator("#findings").get_by_role("button", name=re.compile("Unauthorized Access.*Research Agent"))
+        finding_button.click()
+        expect(finding_button).to_have_attribute("aria-pressed", "true")
+        check_evidence_timeline(page, finding, snapshot)
+
+        inspector = page.locator("#inspector")
+        expect(inspector.get_by_text("Partial evidence trace", exact=True)).to_have_count(int(name is None))
+        affected = inspector.locator("details").filter(has_text=re.compile(r"^Affected entities"))
+        affected.locator("summary").click()
+        expect(affected.get_by_text(recipient_id, exact=True)).to_have_count(int(name is not None))
+        toolbar = page.get_by_role("group", name="Investigation controls")
+        exact_button(toolbar, "Show Affected Nodes").click()
+        graph = page.get_by_role("region", name=GRAPH_NAME)
+        recipient = graph.locator(f'.react-flow__node[data-id="agent:{recipient_id}"]')
+        expect(recipient.locator(".graph-record--affected")).to_have_count(int(name is not None))
+
+        search = page.get_by_role("searchbox", name="Search graph records")
+        search.fill(event_id)
+        search.press("Enter")
+        expect(inspector_heading(page, "handoff")).to_be_visible()
+        check_recipient_field(inspector.locator(".inspect-focus"), "Intended recipient", name, recipient_id)
+        expect(inspector.locator(".inspect-record").get_by_text("denied", exact=True)).to_be_visible()
+
+        picker = page.get_by_role("combobox", name="Select an AI agent")
+        picker.select_option("agent:agent-research")
+        expect(inspector.locator(".inspect-record").get_by_text(event_id, exact=True)).to_be_visible()
+        picker.select_option(f"agent:{recipient_id}")
+        expect(inspector_heading(page, "Relay Agent")).to_be_visible()
+        expect(inspector.locator(".inspect-record").get_by_text(event_id, exact=True)).to_have_count(int(name is not None))
+        expect(inspector.get_by_text("Incoming · Handed to", exact=True)).to_have_count(int(name is not None))
+        assert not errors, errors
+        page.close()
+    print("Verified denied handoff's intended recipient and unverified declaration in the Inspector.")
+
+
+def check_same_second_trigger(browser: Browser, url: str) -> None:
+    from varkhard.dashboard import read_graph
+    from varkhard.demo import seed_demo
+    from varkhard.store import GraphStore
+
+    parent_id = "interaction-catalog-preview"
+    child_id = "interaction-catalog-write-denied"
+    with TemporaryDirectory(prefix="varkhard-trigger-browser-") as directory:
+        db = Path(directory) / "same-second.rl"
+        with GraphStore(db) as store:
+            seed_demo(store)
+            store.query(
+                "MATCH (parent:Interaction {id: $parent}), (child:Interaction {id: $child}) "
+                "SET child.occurred_at = parent.occurred_at, child.parent_id = parent.id "
+                "CREATE (parent)-[:TRIGGERS]->(child)",
+                {"parent": parent_id, "child": child_id},
+            )
+            snapshot = asdict(read_graph(store, db.name))
+
+    page = browser.new_page(reduced_motion="reduce")
+    errors = watch_errors(page)
+    page.route("**/api/graph", lambda route: route.fulfill(json=snapshot))
+    page.goto(f"{url}/")
+    finding = next(item for item in snapshot["findings"] if item["evidence"].get("interaction_id") == child_id)
+    select_finding(page, finding)
+    inspector = page.locator("#inspector")
+    expect(inspector.get_by_text("Partial evidence trace", exact=True)).to_be_visible()
+    expect(inspector.get_by_text("Root cause not established", exact=True)).to_be_visible()
+    graph = page.get_by_role("region", name=GRAPH_NAME)
+    edge = graph.locator('.react-flow__edge[aria-label*="Recorded trigger link (same timestamp, order unknown)"]')
+    expect(edge).to_have_class(re.compile("graph-edge--muted"))
+    expect(edge.locator(".graph-edge-label")).to_have_count(0)
+
+    search = page.get_by_role("searchbox", name="Search graph records")
+    search.fill(child_id)
+    search.press("Enter")
+    expect(inspector.get_by_text("Incoming · Recorded trigger link (order unknown)", exact=True)).to_be_visible()
+    expect(edge.locator(".graph-edge-label")).to_have_text("Order unknown")
+    assert not errors, errors
+    page.close()
+    print("Verified the graph and Inspector show the same-second link with unknown order outside the ordered trace.")
+
+
 def check_error_recovery(browser: Browser, url: str) -> None:
     page = browser.new_page()
     pending: list[Route] = []
@@ -869,6 +996,8 @@ def main() -> None:
             check_short_viewport(browser, url, width, height, chain, args.screenshots)
         check_partial_trace(browser, url, data)
         check_incomplete_evidence(browser, url, data)
+        check_handoff_recipient(browser, url)
+        check_same_second_trigger(browser, url)
         check_error_recovery(browser, url)
         browser.close()
     print("Dashboard browser regression checks passed.")

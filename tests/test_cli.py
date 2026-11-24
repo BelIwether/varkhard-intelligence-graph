@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from varkhard.demo import seed_demo
 from varkhard.store import GraphStore
 
@@ -79,3 +81,25 @@ def test_cli_reports_incomplete_evidence_separately_from_findings_json(tmp_path)
 
     assert "incomplete evidence" in analysis.stderr.lower()
     assert {finding["rule_id"] for finding in json.loads(analysis.stdout)} == {"excessive_permission", "suspicious_chain"}
+
+
+@pytest.mark.parametrize("operation", ["analyze", "seed"])
+def test_cli_circular_snapshot_symlink_returns_an_error_without_writing(tmp_path, operation):
+    path = tmp_path / "loop.rl"
+    try:
+        path.symlink_to(path.name)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"Symbolic links are unavailable: {exc}")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "varkhard", "--db", str(path), operation],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr.strip() == "VARKHARD: The Relate file path could not be resolved."
+    assert path.readlink() == Path(path.name)

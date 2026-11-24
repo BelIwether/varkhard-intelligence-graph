@@ -41,6 +41,7 @@ export type GraphFocus = {
 type GraphProps = {
   nodes: GraphNode[]
   edges: GraphEdge[]
+  ambiguousTriggerIds: ReadonlySet<string>
   focus?: GraphFocus
   expanded?: boolean
   inspectorHidden?: boolean
@@ -231,12 +232,12 @@ function orderInteractions(interactions: GraphNode[], triggers: Map<string, stri
   return ordered
 }
 
-function layoutGraph(nodes: GraphNode[], edges: GraphEdge[], compact: boolean): FlowNode[] {
+function layoutGraph(nodes: GraphNode[], edges: GraphEdge[], ambiguousTriggerIds: ReadonlySet<string>, compact: boolean): FlowNode[] {
   const triggers = new Map<string, string[]>()
   const agentByRecord = new Map<string, string>()
   const resourceByRecord = new Map<string, string>()
   for (const edge of edges) {
-    if (edge.kind === 'TRIGGERS') {
+    if (edge.kind === 'TRIGGERS' && !ambiguousTriggerIds.has(edge.id)) {
       const children = triggers.get(edge.source) ?? []
       children.push(edge.target)
       triggers.set(edge.source, children)
@@ -320,7 +321,7 @@ const evidenceStroke: Record<Emphasis, string> = {
   step: '#d18a90',
 }
 
-function flowEdges(nodes: GraphNode[], edges: GraphEdge[], focus?: GraphFocus): RelationshipEdge[] {
+function flowEdges(nodes: GraphNode[], edges: GraphEdge[], ambiguousTriggerIds: ReadonlySet<string>, focus?: GraphFocus): RelationshipEdge[] {
   const highlighted = new Set(focus?.edgeIds)
   const order = new Map(focus?.orderedEdgeIds?.map((id, index) => [id, index + 1]))
   const names = new Map(nodes.map(({ id, label }) => [id, label]))
@@ -329,19 +330,20 @@ function flowEdges(nodes: GraphNode[], edges: GraphEdge[], focus?: GraphFocus): 
     const emphasis = active ? focus?.tone : focus && 'muted'
     const access = edge.kind === 'HAS_PERMISSION' || edge.kind === 'ON_RESOURCE'
     const trigger = edge.kind === 'TRIGGERS'
+    const orderUnknown = ambiguousTriggerIds.has(edge.id)
     const handoff = edge.kind === 'HANDED_TO'
     const sourceHandle = trigger ? 'triggers' : handoff ? 'handoff'
       : edge.kind === 'HAS_PERMISSION' ? 'permission' : edge.kind === 'PERFORMED' ? 'activity' : 'out'
     const targetHandle = trigger ? 'triggered' : handoff ? 'recipient'
       : edge.kind === 'ON_RESOURCE' ? 'permission' : edge.kind === 'TARGETS' ? 'activity' : 'in'
     const stroke = emphasis ? evidenceStroke[emphasis] : access ? '#505156' : '#73757a'
-    const relation = edgeLabels[edge.kind]
+    const relation = orderUnknown ? 'Recorded trigger link (same timestamp, order unknown)' : edgeLabels[edge.kind]
     const index = order.get(edge.id)
     // Keep progression readable next to the interaction cards. Supporting edges
     // still expose their direction and relationship through the SVG tooltip.
     const incomingStep = trigger && focus?.tone === 'step' && edge.target === focus.selectedNodeId
-    const label = active && index !== undefined ? `${index} · ${relation}`
-      : active && incomingStep ? relation : undefined
+    const label = !active ? undefined : orderUnknown ? 'Order unknown'
+      : index !== undefined ? `${index} · ${relation}` : incomingStep ? relation : undefined
     const title = `${names.get(edge.source) ?? edge.source} → ${relation} → ${names.get(edge.target) ?? edge.target}`
 
     return {
@@ -359,7 +361,7 @@ function flowEdges(nodes: GraphNode[], edges: GraphEdge[], focus?: GraphFocus): 
       style: {
         stroke,
         strokeWidth: active ? 2.3 : 1.25,
-        strokeDasharray: !active && (trigger || handoff) ? '4 4' : undefined,
+        strokeDasharray: orderUnknown || (!active && (trigger || handoff)) ? '4 4' : undefined,
       },
       markerEnd: { type: MarkerType.ArrowClosed, color: stroke, width: 14, height: 14 },
     }
@@ -501,8 +503,8 @@ function GraphViewport({ focus, edges, layout, expanded, inspectorHidden }: {
   )
 }
 
-function GraphCanvas({ nodes, edges, focus, onNodeSelect, expanded = false, inspectorHidden = false, compact }: GraphProps & { compact: boolean }) {
-  const layout = useMemo(() => layoutGraph(nodes, edges, compact), [nodes, edges, compact])
+function GraphCanvas({ nodes, edges, ambiguousTriggerIds, focus, onNodeSelect, expanded = false, inspectorHidden = false, compact }: GraphProps & { compact: boolean }) {
+  const layout = useMemo(() => layoutGraph(nodes, edges, ambiguousTriggerIds, compact), [nodes, edges, ambiguousTriggerIds, compact])
   const [positioned, setPositioned, onNodesChange] = useNodesState(layout)
   const previousLayout = useRef(layout)
 
@@ -538,7 +540,7 @@ function GraphCanvas({ nodes, edges, focus, onNodeSelect, expanded = false, insp
       }
     })
   }, [positioned, focus])
-  const styledEdges = useMemo(() => flowEdges(nodes, edges, focus), [nodes, edges, focus])
+  const styledEdges = useMemo(() => flowEdges(nodes, edges, ambiguousTriggerIds, focus), [nodes, edges, ambiguousTriggerIds, focus])
   const visibleEdges = useMemo(() => layoutEdgeLabels(styledEdges, visibleNodes), [styledEdges, visibleNodes])
 
   return (

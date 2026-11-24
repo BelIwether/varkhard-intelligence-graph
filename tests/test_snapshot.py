@@ -195,3 +195,49 @@ def test_ambiguous_optional_link_cannot_support_a_chain_finding(tmp_path, damage
     assert graph.evidence_quality.invalid_relationships >= 1
     assert [finding.rule_id for finding in graph.findings] == [_UNAUTHORIZED, _EXCESSIVE]
     _assert_resolved_evidence(graph)
+
+
+@pytest.mark.parametrize(("parent_id", "child_id"), [
+    ("interaction-ledger-read", "interaction-ledger-handoff"),
+    ("interaction-ledger-handoff", "interaction-outbox-export"),
+])
+def test_same_second_trigger_is_retained_without_supporting_a_chain(tmp_path, parent_id, child_id):
+    graph = _read_views(
+        tmp_path / "snapshot.rl",
+        "MATCH (parent:Interaction {id: $parent_id})-[:TRIGGERS]->(child:Interaction {id: $child_id}) "
+        "SET child.occurred_at = parent.occurred_at",
+        {"parent_id": parent_id, "child_id": child_id},
+    )
+
+    assert graph.evidence_quality.status == "complete"
+    assert graph.evidence_quality.invalid_relationships == 0
+    assert any(
+        (edge.kind, edge.source, edge.target) == ("TRIGGERS", f"interaction:{parent_id}", f"interaction:{child_id}")
+        for edge in graph.edges
+    )
+    assert [finding.rule_id for finding in graph.findings] == [_UNAUTHORIZED, _EXCESSIVE]
+    _assert_resolved_evidence(graph)
+
+
+def test_same_second_trigger_does_not_establish_an_investigation_predecessor(tmp_path):
+    parent_id = "interaction-catalog-preview"
+    child_id = "interaction-catalog-write-denied"
+    graph = _read_views(
+        tmp_path / "snapshot.rl",
+        "MATCH (parent:Interaction {id: $parent_id}), (child:Interaction {id: $child_id}) "
+        "SET child.occurred_at = parent.occurred_at, child.parent_id = parent.id "
+        "CREATE (parent)-[:TRIGGERS]->(child)",
+        {"parent_id": parent_id, "child_id": child_id},
+    )
+
+    link = next(edge for edge in graph.edges if edge.kind == "TRIGGERS" and edge.target == _DENIED_EVENT)
+    assert link.source == f"interaction:{parent_id}"
+    assert graph.evidence_quality.status == "complete"
+    finding = next(item for item in graph.findings if item.rule_id == _UNAUTHORIZED)
+    trace = finding.investigation
+    assert not trace.complete
+    assert trace.trigger.outcome == "denied"
+    assert [step.record_node_id for step in trace.steps if step.occurred_at is not None] == [_DENIED_EVENT]
+    assert link.source not in trace.affected_node_ids
+    assert link.id not in trace.edge_ids
+    _assert_resolved_evidence(graph)

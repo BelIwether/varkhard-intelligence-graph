@@ -117,7 +117,7 @@ def _suspicious_chains(snapshot: Snapshot, resources: dict[str, Resource]) -> li
             if (
                 handoff.action != "handoff" or handoff.outcome != "success" or recipient is None
                 or handoff.resource_id != read.resource_id or handoff.agent_id != read.agent_id
-                or recipient == read.agent_id
+                or recipient == read.agent_id or read.occurred_at >= handoff.occurred_at
             ):
                 continue
             for export in children.get(handoff.id, ()):
@@ -125,6 +125,7 @@ def _suspicious_chains(snapshot: Snapshot, resources: dict[str, Resource]) -> li
                 if (
                     export.action != "export" or export.outcome != "success" or export.agent_id != recipient
                     or resources[export.resource_id].boundary != "external" or elapsed > _CHAIN_WINDOW_SECONDS
+                    or handoff.occurred_at >= export.occurred_at
                 ):
                     continue
                 findings.append(Finding(

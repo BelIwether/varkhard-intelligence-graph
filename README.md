@@ -114,7 +114,7 @@ Each API request opens its own read-only connection, queries the file, and close
 
 A locked, unavailable, or unsupported snapshot returns HTTP `503`. Close any active writer, check the configured path, or select a supported VARKHARD snapshot before retrying. A snapshot created by `GraphStore` with zero records returns an empty graph.
 
-The graph response's `source` includes the filename, read-only status, and `synthetic_demo`, which identifies the bundled sample file.
+The graph response's `source` includes the basename of the resolved snapshot opened for that request, its read-only status, and `synthetic_demo`, which identifies the bundled sample file. When the configured path is a symlink, the response describes the target used for the request.
 
 `GET /api/graph` reports `evidence_quality.status` as `complete` or `incomplete`, with counts of rejected records (`invalid_records`) and rejected or missing relationships (`invalid_relationships`). A rejected record and its links can contribute to both counts. The dashboard warns when evidence is incomplete. If a policy scope is incomplete, the response omits findings in that scope that depend on the absence of a grant or baseline. Other supported findings remain available.
 
@@ -145,6 +145,8 @@ Every finding includes a rule ID, an explanation, and evidence from the graph. T
 
 - The investigation's origin identifies the first relevant record supported by the trace. The Inspector shows **Root cause not established** when the snapshot supports only an observed origin or policy mismatch.
 - Trace construction validates graph references and uses explicit event links and timestamps to order recorded activity. Missing or inconsistent references can produce a partial trace with fewer supported steps.
+- A stored `TRIGGERS` link between two validated events in the same UTC second remains visible in the graph as a recorded link with unknown order. Ordered investigations and Suspicious Chain detection require strictly increasing timestamps. Self-links and links that contradict recorded timestamps are rejected.
+- A handoff's declared recipient is unverified unless a matching `HANDED_TO` relationship is validated. An unverified declaration cannot add an affected entity or an incoming action. A denied handoff records an attempt, even when its intended destination is verified.
 - For Unauthorized Access, the flagged interaction is the trigger. The trace can follow up to 64 recorded events backward when `parent_id`, the `TRIGGERS` edge, and timestamps agree. The rule checks grants currently stored in the file. Evaluating historical policy requires permission history. A `denied` outcome records an attempt.
 - For Excessive Permission, the grant mismatch is both origin and trigger. The related least-privilege entries are policy evidence. Interpreting the mismatch depends on baseline coverage. The grant finding may have no associated interaction or outcome.
 - For Suspicious Chain, the detected read is the origin, and the external export completes the rule pattern. The path follows the recorded read, handoff, and export. Establishing intent or effects outside the graph requires separate evidence.

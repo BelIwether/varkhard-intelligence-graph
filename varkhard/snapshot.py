@@ -270,7 +270,8 @@ def _read_interactions(
             incomplete.add(event_id)
     for child_key, parent_key in pending_parents.items():
         child, parent = observed[child_key], observed.get(parent_key)
-        if parent is not None and parent.occurred_at < child.occurred_at:
+        # Equal timestamps support the recorded link, but cannot establish which event occurred first.
+        if parent is not None and parent_key != child_key and parent.occurred_at <= child.occurred_at:
             links.keep(child_key, "TRIGGERS", parent_key)
         else:
             incomplete.add(child.id)

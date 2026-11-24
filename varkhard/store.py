@@ -77,7 +77,16 @@ class GraphStore:
     def __init__(self, path: str | Path = DEFAULT_DB_PATH, *, read_only: bool = False) -> None:
         self._owner = current_thread()
         self._read_only = read_only
-        self._path = Path(path).expanduser().resolve()
+        candidate = Path(path).expanduser()
+        try:
+            try:
+                self._path = candidate.resolve(strict=True)
+            except (FileNotFoundError, NotADirectoryError):
+                # Seeding can create a new file or parent directory.
+                self._path = candidate.resolve()
+        except (OSError, RuntimeError) as exc:
+            # Path.resolve raises different exception types for symlink loops across Python versions.
+            raise GraphStoreError("The Relate file path could not be resolved.") from exc
         if self._path.suffix != ".rl":
             raise UnsupportedSnapshotError("A Relate Single File path must end in .rl.")
         if not read_only:
@@ -107,6 +116,11 @@ class GraphStore:
             except BaseException:
                 self.close()
                 raise
+
+    @property
+    def path(self) -> Path:
+        """The resolved path used to open this connection."""
+        return self._path
 
     def __enter__(self) -> "GraphStore":
         self._active_connection()

@@ -62,6 +62,17 @@ function orderedTriggerEdges(investigation: Investigation, edges: GraphEdge[]) {
   }).sort((left, right) => left.index - right.index).map(({ id }) => id)
 }
 
+function findAmbiguousTriggers({ nodes, edges, interactions }: Dashboard) {
+  const timestampsByRecord = new Map(interactions.map(({ id, occurred_at }) => [id, occurred_at]))
+  const timestampsByNode = new Map(nodes.filter(({ kind }) => kind === 'interaction')
+    .map(({ id, record_id }) => [id, timestampsByRecord.get(record_id)]))
+  return new Set(edges.filter(({ kind, source, target }) => {
+    if (kind !== 'TRIGGERS') return false
+    const timestamp = timestampsByNode.get(source)
+    return timestamp !== undefined && timestamp === timestampsByNode.get(target)
+  }).map(({ id }) => id))
+}
+
 function investigationFocus({ finding, view }: FindingSelection, edges: GraphEdge[]): GraphFocus {
   const trace = finding.investigation
   if (!trace) return { nodeIds: finding.node_ids, edgeIds: finding.edge_ids, tone: 'finding' }
@@ -254,6 +265,7 @@ function DashboardContent({ data, expanded, onExpandedChange, expandButton }: {
   const [graphRevision, setGraphRevision] = useState(0)
   const [inspectorCollapsed, setInspectorCollapsed] = useState<boolean | null>(null)
   const focus = useMemo(() => graphFocus(selection, data.edges), [selection, data.edges])
+  const ambiguousTriggerIds = useMemo(() => findAmbiguousTriggers(data), [data])
   const selectedFinding = selection?.kind === 'finding' ? selection : undefined
   const selectedNode = selection?.kind === 'node' ? selection.node : undefined
   const selectedAgent = selectedNode?.kind === 'agent' ? selectedNode.id : ''
@@ -382,6 +394,7 @@ function DashboardContent({ data, expanded, onExpandedChange, expandButton }: {
                 key={graphRevision}
                 nodes={data.nodes}
                 edges={data.edges}
+                ambiguousTriggerIds={ambiguousTriggerIds}
                 focus={focus}
                 onNodeSelect={onNodeSelect}
                 expanded={expanded}
@@ -402,6 +415,7 @@ function DashboardContent({ data, expanded, onExpandedChange, expandButton }: {
 
         <Inspector
           data={data}
+          ambiguousTriggerIds={ambiguousTriggerIds}
           hidden={inspectorHidden}
           node={selectedNode}
           finding={selectedFinding?.finding}

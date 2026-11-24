@@ -189,8 +189,10 @@ class InvestigationBuilder:
         related_nodes = [agent, resource]
         if event.recipient_id is not None:
             recipient = self.node_ids.get(("agent", event.recipient_id))
-            related_nodes.append(recipient)
-            relationships.append(self._relationship("HANDED_TO", node, recipient))
+            handoff = self._relationship("HANDED_TO", node, recipient)
+            relationships.append(handoff)
+            if handoff is not None:
+                related_nodes.append(handoff.target)
         step = self._step(
             title, description, node, related_nodes, [parent_edge, *relationships],
             action=event.action, occurred_at=event.occurred_at, outcome=event.outcome,
