@@ -189,7 +189,32 @@ export function Inspector({ data, node, finding, onNodeSelect }: {
           </>
         )}
         {node && <NodeDetails data={data} node={node} onNodeSelect={onNodeSelect} />}
-        {!node && !finding && <p className="empty-message">Select a graph node or finding to inspect its records.</p>}
+        {!node && !finding && (
+          <div className="inspector-welcome">
+            <span className="inspector-overline">INVESTIGATION CONSOLE</span>
+            <div className="inspector-welcome-icon"><Crosshair size={22} aria-hidden="true" /></div>
+            <h3>Start an investigation</h3>
+            <p>Choose a graph node or a security finding to examine its records, relationships and evidence.</p>
+            <div className="inspector-snapshot">
+              <div><span>AI agents</span><strong>{data.agents.length}</strong></div>
+              <div><span>Recorded actions</span><strong>{data.interactions.length}</strong></div>
+              <div><span>Findings</span><strong>{data.findings.length}</strong></div>
+            </div>
+            {data.agents.length > 0 && (
+              <div className="inspector-shortcuts">
+                <span className="inspector-overline">QUICK ACCESS / AGENTS</span>
+                {data.agents.slice(0, 3).map((agent) => {
+                  const graphNode = data.nodes.find((entry) => entry.id === `agent:${agent.id}`)
+                  return graphNode && (
+                    <button key={agent.id} type="button" onClick={() => onNodeSelect(graphNode)}>
+                      <span>{agent.name}</span><span aria-hidden="true">↗</span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </section>
   )
