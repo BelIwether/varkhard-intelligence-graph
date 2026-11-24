@@ -227,6 +227,7 @@
 
 .inspect-evidence-list,
 .inspect-timeline,
+.inspect-step-list,
 .inspect-trace-records,
 .inspect-records,
 .inspect-relationships,
@@ -261,7 +262,8 @@
 }
 
 .inspect-trace-anchors,
-.inspect-timeline {
+.inspect-timeline,
+.inspect-step-list {
   display: grid;
   gap: 7px;
 }
@@ -295,8 +297,7 @@
   overflow-wrap: anywhere;
 }
 
-.inspect-trace-anchor p,
-.inspect-step-content p {
+.inspect-trace-anchor p {
   margin: 0;
   color: var(--muted);
   font-size: .75rem;
@@ -306,29 +307,92 @@
 
 .inspect-step-facts {
   display: grid;
-  gap: 2px;
+  gap: 4px;
   min-width: 0;
-  margin-top: 3px;
 }
 
-.inspect-step-labels {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  margin-top: 2px;
+.inspect-evidence-groups {
+  display: grid;
+  gap: 13px;
+}
+
+.inspect-evidence-group h5 {
+  margin: 0 0 7px;
   color: var(--muted);
   font-size: .6875rem;
-  overflow-wrap: anywhere;
+  font-weight: 650;
 }
 
-.inspect-step-labels strong {
-  margin-left: 2px;
-  color: var(--text);
+.inspect-timeline {
+  position: relative;
+  padding-inline-start: 11px;
+}
+
+.inspect-timeline::before {
+  position: absolute;
+  inset: 16px auto 0 3px;
+  border-inline-start: 1px solid color-mix(in srgb, var(--steel) 24%, var(--border));
+  content: '';
+}
+
+.inspect-timeline > li {
+  position: relative;
+}
+
+.inspect-timeline > li::before {
+  position: absolute;
+  inset: 14px auto auto -11px;
+  width: 5px;
+  height: 5px;
+  border: 1px solid var(--steel);
+  border-radius: 50%;
+  background: var(--surface);
+  content: '';
+}
+
+.inspect-timeline > li[data-active='true']::before {
+  background: var(--steel);
+}
+
+.inspect-step-policy {
+  color: var(--muted);
+  font-size: .6875rem;
   font-weight: 600;
 }
 
-.inspect-step-labels .inspect-denied {
+.inspect-step-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 10px;
+  margin: 0;
+  font-size: .6875rem;
+}
+
+.inspect-step-fields > div {
+  min-width: 0;
+}
+
+.inspect-step-fields dt {
+  color: var(--muted);
+}
+
+.inspect-step-fields dd {
+  margin: 0;
+  color: var(--text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.inspect-step-fields .inspect-denied {
   color: var(--risk);
+}
+
+.inspect-step-time {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 6px;
 }
 
 .inspect-step[data-active='true'] {
@@ -354,6 +418,10 @@
 
 button.inspect-step-action:hover {
   background: color-mix(in srgb, var(--steel) 7%, transparent);
+}
+
+.inspect-step-action strong {
+  grid-column: 2;
 }
 
 .inspect-step-number {

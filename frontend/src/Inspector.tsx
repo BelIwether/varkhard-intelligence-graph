@@ -3,7 +3,7 @@ import {
   GitFork, History, KeyRound, Link2, Route, ShieldAlert,
 } from 'lucide-react'
 import { useMemo } from 'react'
-import type { Dashboard, EvidenceValue, Finding, GraphEdge, GraphNode, GraphNodeKind } from './api'
+import type { Dashboard, EvidenceValue, Finding, GraphEdge, GraphNode, GraphNodeKind, Interaction, Permission } from './api'
 import './inspector.css'
 
 const nodeKinds = {
@@ -60,6 +60,11 @@ type NodesById = ReadonlyMap<string, GraphNode>
 type Investigation = NonNullable<Finding['investigation']>
 type InvestigationStep = Investigation['steps'][number]
 type StepSelection = { activeStepIndex?: number; onStepSelect?: (index: number) => void }
+type StepRecords = {
+  nodes: NodesById
+  interactions: ReadonlyMap<string, Interaction>
+  permissions: ReadonlyMap<string, Permission>
+}
 
 function labelFor(key: string, rule?: Finding['rule_id']) {
   if (key === 'action' && rule === 'unauthorized_access') return 'Requested action'
@@ -119,77 +124,156 @@ function EvidenceFields({ evidence, nodes, rule }: {
   )
 }
 
-function StepFacts({ step, nodes }: { step: InvestigationStep; nodes: NodesById }) {
-  const id = step.record_node_id
-  const occurredAt = step.occurred_at === null ? null : formatTime(step.occurred_at)
+function stepFacts(step: InvestigationStep, { nodes, interactions, permissions }: StepRecords) {
+  const node = step.record_node_id ? nodes.get(step.record_node_id) : undefined
+  const kind = node?.kind === 'interaction' || node?.kind === 'permission' ? node.kind : 'unknown'
+  const interaction = node?.kind === 'interaction' ? interactions.get(node.record_id) : undefined
+  const permission = node?.kind === 'permission' ? permissions.get(node.record_id) : undefined
+  const record = interaction ?? permission
+
+  return {
+    kind,
+    recordId: node?.record_id ?? step.record_node_id,
+    agent: record ? nodes.get(`agent:${record.agent_id}`)?.label ?? record.agent_id : null,
+    resource: record ? nodes.get(`resource:${record.resource_id}`)?.label ?? record.resource_id : null,
+    recipient: interaction?.recipient_id
+      ? nodes.get(`agent:${interaction.recipient_id}`)?.label ?? interaction.recipient_id
+      : null,
+    action: record?.action ?? step.action,
+    occurredAt: kind === 'permission' ? null : interaction?.occurred_at ?? step.occurred_at,
+    outcome: kind === 'permission' ? null : interaction?.outcome ?? step.outcome,
+    permissionKind: permission?.kind,
+  }
+}
+
+type StepFacts = ReturnType<typeof stepFacts>
+
+function StepRecord({ facts }: { facts: StepFacts }) {
+  const occurredAt = facts.occurredAt === null ? null : formatTime(facts.occurredAt)
+  const policyLabel = facts.permissionKind === 'baseline' ? 'Baseline approval' : 'Current grant'
 
   return (
     <div className="inspect-step-facts">
-      {id && <code>{nodes.get(id)?.record_id ?? id}</code>}
-      {occurredAt && <time className="inspect-time" dateTime={occurredAt}>{occurredAt}</time>}
-      {(step.action || step.outcome) && (
-        <div className="inspect-step-labels">
-          {step.action && <span>Action <strong>{step.action}</strong></span>}
-          {step.outcome && (
-            <span>Outcome <strong className={step.outcome === 'denied' ? 'inspect-denied' : undefined}>{step.outcome}</strong></span>
-          )}
-        </div>
+      {facts.kind === 'permission' && (
+        <div className="inspect-step-policy">Policy record{facts.permissionKind && <> · {policyLabel}</>}</div>
       )}
+      {facts.recordId && <code>{facts.recordId}</code>}
+      <dl className="inspect-step-fields">
+        <div><dt>Agent</dt><dd>{facts.agent ?? 'Unavailable'}</dd></div>
+        <div><dt>Resource</dt><dd>{facts.resource ?? 'Unavailable'}</dd></div>
+        <div><dt>Action</dt><dd>{facts.action ?? 'Unavailable'}</dd></div>
+        <div>
+          <dt>Outcome</dt>
+          <dd className={facts.outcome === 'denied' ? 'inspect-denied' : undefined}>
+            {facts.outcome ?? 'Unavailable'}
+          </dd>
+        </div>
+        {facts.recipient && <div><dt>Recipient</dt><dd>{facts.recipient}</dd></div>}
+        <div className="inspect-step-time">
+          <dt>{facts.kind === 'permission' ? 'Event time' : 'Time (UTC)'}</dt>
+          <dd>{occurredAt ? <time className="inspect-time" dateTime={occurredAt}>{occurredAt}</time> : 'Unavailable'}</dd>
+        </div>
+      </dl>
     </div>
   )
 }
 
-function TraceAnchor({ label, step, nodes }: {
+function TraceAnchor({ label, step, records }: {
   label: string
   step: InvestigationStep | null
-  nodes: NodesById
+  records: StepRecords
 }) {
+  const facts = step ? stepFacts(step, records) : null
+  const occurredAt = facts?.occurredAt != null ? formatTime(facts.occurredAt) : null
   return (
     <div className="inspect-trace-anchor">
       <h5>{label}</h5>
-      {step ? (
+      {step && facts ? (
         <>
           <strong>{step.title}</strong>
           <p>{step.description}</p>
-          <StepFacts step={step} nodes={nodes} />
+          {facts.recordId && <code>{facts.recordId}</code>}
+          {occurredAt && <time className="inspect-time" dateTime={occurredAt}>{occurredAt}</time>}
         </>
       ) : <p>Unavailable in this snapshot.</p>}
     </div>
   )
 }
 
-function EvidenceSteps({ steps, nodes, activeStepIndex, onStepSelect }: {
-  steps: InvestigationStep[]
-  nodes: NodesById
-} & StepSelection) {
-  if (!steps.length) return <p className="inspect-muted">No ordered steps were established.</p>
+type EvidenceItem = { step: InvestigationStep; index: number; facts: StepFacts }
 
+function EvidenceItems({ items, timeline, activeStepIndex, onStepSelect }: {
+  items: EvidenceItem[]
+  timeline?: boolean
+} & StepSelection) {
+  const List = timeline ? 'ol' : 'ul'
   return (
-    <ol className="inspect-timeline" role="list">
-      {steps.map((step, index) => {
+    <List className={timeline ? 'inspect-timeline' : 'inspect-step-list'} role="list">
+      {items.map(({ step, index, facts }, row) => {
         const active = index === activeStepIndex
         const title = (
           <>
-            <span className="inspect-step-number" aria-hidden="true">{index + 1}</span>
+            {timeline && <span className="inspect-step-number" aria-hidden="true">{row + 1}</span>}
+            {facts.kind === 'permission' && <KeyRound size={14} aria-hidden="true" />}
+            {facts.kind === 'unknown' && <CircleHelp size={14} aria-hidden="true" />}
             <strong>{step.title}</strong>
             {onStepSelect && <Crosshair size={14} aria-hidden="true" />}
           </>
         )
         return (
-          <li className="inspect-step" data-active={active} key={index}>
+          <li className="inspect-step" data-step-kind={facts.kind} data-active={active} key={index}>
             {onStepSelect ? (
               <button className="inspect-step-action" type="button" aria-pressed={active} aria-controls="graph" onClick={() => onStepSelect(index)}>
                 {title}
               </button>
             ) : <div className="inspect-step-action">{title}</div>}
             <div className="inspect-step-content">
-              <p>{step.description}</p>
-              <StepFacts step={step} nodes={nodes} />
+              <StepRecord facts={facts} />
             </div>
           </li>
         )
       })}
-    </ol>
+    </List>
+  )
+}
+
+function EvidenceSteps({ steps, records, activeStepIndex, onStepSelect }: {
+  steps: InvestigationStep[]
+  records: StepRecords
+} & StepSelection) {
+  if (!steps.length) return <p className="inspect-muted">No documented evidence steps were established.</p>
+
+  const items = steps.map((step, index) => ({ step, index, facts: stepFacts(step, records) }))
+  const events = items.filter(({ facts }) => facts.kind === 'interaction').sort((first, second) => {
+    const firstTime = first.facts.occurredAt ?? Number.POSITIVE_INFINITY
+    const secondTime = second.facts.occurredAt ?? Number.POSITIVE_INFINITY
+    return firstTime === secondTime ? first.index - second.index : firstTime - secondTime
+  })
+  const policies = items.filter(({ facts }) => facts.kind === 'permission')
+  const other = items.filter(({ facts }) => facts.kind === 'unknown')
+  const selection = { activeStepIndex, onStepSelect }
+
+  return (
+    <div className="inspect-evidence-groups">
+      {events.length > 0 && (
+        <section className="inspect-evidence-group" aria-labelledby="recorded-event-timeline-title">
+          <h5 id="recorded-event-timeline-title">Recorded event timeline</h5>
+          <EvidenceItems items={events} timeline {...selection} />
+        </section>
+      )}
+      {policies.length > 0 && (
+        <section className="inspect-evidence-group" aria-labelledby="policy-comparison-title">
+          <h5 id="policy-comparison-title">Policy comparison</h5>
+          <EvidenceItems items={policies} {...selection} />
+        </section>
+      )}
+      {other.length > 0 && (
+        <section className="inspect-evidence-group" aria-labelledby="other-evidence-title">
+          <h5 id="other-evidence-title">Other evidence</h5>
+          <EvidenceItems items={other} {...selection} />
+        </section>
+      )}
+    </div>
   )
 }
 
@@ -256,12 +340,13 @@ function TraceRecords({ investigation, nodes, edges }: {
   )
 }
 
-function FindingDetails({ finding, nodes, edges, activeStepIndex, onStepSelect }: {
+function FindingDetails({ finding, records, edges, activeStepIndex, onStepSelect }: {
   finding: Finding
-  nodes: NodesById
+  records: StepRecords
   edges: ReadonlyMap<string, GraphEdge>
 } & StepSelection) {
   const { investigation, evidence, rule_id: rule } = finding
+  const { nodes } = records
   const Icon = ruleIcons[rule] ?? ShieldAlert
   const fields = Object.fromEntries(
     (contextFields[rule] ?? []).filter((key) => Object.hasOwn(evidence, key)).map((key) => [key, evidence[key]]),
@@ -287,24 +372,24 @@ function FindingDetails({ finding, nodes, edges, activeStepIndex, onStepSelect }
               <a href="#investigation-tools" className="inspect-graph-link">Investigation controls <ArrowUpRight size={14} aria-hidden="true" /></a>
             </div>
             <div className="inspect-trace-anchors">
-              <TraceAnchor label="Earliest supported evidence" step={investigation.origin} nodes={nodes} />
-              <TraceAnchor label="Trigger" step={investigation.trigger} nodes={nodes} />
+              <TraceAnchor label="Earliest supported evidence" step={investigation.origin} records={records} />
+              <TraceAnchor label="Trigger" step={investigation.trigger} records={records} />
             </div>
           </>
         ) : <p className="inspect-muted">A structured trace is unavailable from this source.</p>}
       </section>
-      {Object.keys(fields).length > 0 && (
-        <section className="inspect-section" aria-labelledby="recorded-context-title">
-          <h4 id="recorded-context-title">Recorded context</h4>
-          <EvidenceFields evidence={fields} nodes={nodes} rule={rule} />
-        </section>
-      )}
       {investigation && (
         <section className="inspect-section" aria-labelledby="evidence-steps-title">
           <h4 id="evidence-steps-title">
             Evidence steps <span>{investigation.steps.length}</span>
           </h4>
-          <EvidenceSteps steps={investigation.steps} nodes={nodes} activeStepIndex={activeStepIndex} onStepSelect={onStepSelect} />
+          <EvidenceSteps steps={investigation.steps} records={records} activeStepIndex={activeStepIndex} onStepSelect={onStepSelect} />
+        </section>
+      )}
+      {Object.keys(fields).length > 0 && (
+        <section className="inspect-section" aria-labelledby="recorded-context-title">
+          <h4 id="recorded-context-title">Recorded context</h4>
+          <EvidenceFields evidence={fields} nodes={nodes} rule={rule} />
         </section>
       )}
       <section className="inspect-section inspect-records-section" aria-label="Evidence records">
@@ -459,18 +544,24 @@ function NodeDetails({ data, node, nodes, onNodeSelect }: {
   )
 }
 
-export function Inspector({ data, node, finding, onNodeSelect, activeStepIndex, onStepSelect }: {
+export function Inspector({ data, node, finding, hidden, onNodeSelect, activeStepIndex, onStepSelect }: {
   data: Dashboard
   node?: GraphNode
   finding?: Finding
+  hidden?: boolean
   onNodeSelect: (node: GraphNode) => void
 } & StepSelection) {
   const nodes = useMemo(() => new Map(data.nodes.map((entry) => [entry.id, entry])), [data.nodes])
+  const records = useMemo(() => ({
+    nodes,
+    interactions: new Map(data.interactions.map((record) => [record.id, record])),
+    permissions: new Map(data.permissions.map((record) => [record.id, record])),
+  }), [nodes, data.interactions, data.permissions])
   const edges = useMemo(() => new Map(data.edges.map((entry) => [entry.id, entry])), [data.edges])
   const shortcuts = useMemo(() => data.nodes.filter((entry) => entry.kind === 'agent').slice(0, 3), [data.nodes])
 
   return (
-    <section className="panel investigation-inspector" id="inspector" aria-labelledby="inspector-title">
+    <section className="panel investigation-inspector" id="inspector" aria-labelledby="inspector-title" hidden={hidden}>
       <header className="inspect-header">
         <div className="inspect-heading">
           <span className="inspect-header-icon"><Crosshair size={17} aria-hidden="true" /></span>
@@ -482,7 +573,7 @@ export function Inspector({ data, node, finding, onNodeSelect, activeStepIndex, 
         {finding && (
           <FindingDetails
             finding={finding}
-            nodes={nodes}
+            records={records}
             edges={edges}
             activeStepIndex={activeStepIndex}
             onStepSelect={onStepSelect}

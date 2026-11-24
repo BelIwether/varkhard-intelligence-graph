@@ -3,6 +3,7 @@
 import argparse
 import re
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 
 from playwright.sync_api import Browser, ConsoleMessage, Locator, Page, Response, Route, expect, sync_playwright
@@ -35,7 +36,14 @@ def graph_ids(graph: Locator, selector: str) -> set[str]:
 def graph_state(graph: Locator) -> dict[str, float]:
     return graph.locator(".react-flow__viewport").evaluate("""element => {
         const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform);
-        return { zoom: matrix.a, x: matrix.e, y: matrix.f };
+        const canvas = element.closest('.react-flow').getBoundingClientRect();
+        return {
+            zoom: matrix.a,
+            x: matrix.e,
+            y: matrix.f,
+            centerX: (canvas.width / 2 - matrix.e) / matrix.a,
+            centerY: (canvas.height / 2 - matrix.f) / matrix.a,
+        };
     }""")
 
 
@@ -120,8 +128,7 @@ def check_investigation(page: Page, graph: Locator, finding: dict, edges: list[d
     assert graph_ids(graph, ".react-flow__node:has(.graph-record--finding)") == set(investigation["node_ids"])
     assert graph_ids(graph, ".react-flow__edge.graph-edge--finding") == set(investigation["edge_ids"])
     if finding["rule_id"] == "suspicious_chain":
-        labels = graph.locator(".graph-edge-label").filter(has_text="Triggers")
-        expect(labels).to_have_count(2)
+        check_recorded_chain(graph, investigation, edges)
 
     affected = exact_button(toolbar, "Show Affected Nodes")
     affected.click()
@@ -172,8 +179,69 @@ def check_investigation(page: Page, graph: Locator, finding: dict, edges: list[d
     print(f"Verified origin, full path, affected nodes, all steps and reset for {finding['category']}.")
 
 
-def check_record_details(page: Page, finding: dict) -> None:
+def check_recorded_chain(graph: Locator, investigation: dict, edges: list[dict]) -> None:
+    read, handoff, export = (step["record_node_id"] for step in investigation["steps"])
+    expected = {
+        ("TRIGGERS", read, handoff),
+        ("TRIGGERS", handoff, export),
+        ("HANDED_TO", handoff, "agent:agent-relay"),
+    }
+    highlighted = graph_ids(graph, ".react-flow__edge.graph-edge--finding")
+    recorded = {
+        (edge["kind"], edge["source"], edge["target"])
+        for edge in edges
+        if edge["id"] in highlighted and edge["kind"] in {"TRIGGERS", "HANDED_TO"}
+    }
+    assert recorded == expected, recorded
+    labels = graph.locator(".graph-edge-label").filter(has_text="Triggers")
+    expect(labels).to_have_count(2)
+
+
+def check_evidence_timeline(page: Page, finding: dict, data: dict) -> None:
+    inspector = page.locator("#inspector")
+    events = inspector.get_by_role("region", name="Recorded event timeline")
+    policy = inspector.get_by_role("region", name="Policy comparison")
+    interactions = {item["id"]: item for item in data["interactions"]}
+    permissions = {item["id"]: item for item in data["permissions"]}
+    agents = {item["id"]: item["name"] for item in data["agents"]}
+    resources = {item["id"]: item["name"] for item in data["resources"]}
+    steps = finding["investigation"]["steps"]
+    events_in_trace = [step for step in steps if step["record_node_id"].startswith("interaction:")]
+    permissions_in_trace = [step for step in steps if step["record_node_id"].startswith("permission:")]
+    expect(events.locator(".inspect-step")).to_have_count(len(events_in_trace))
+    expect(policy.locator(".inspect-step")).to_have_count(len(permissions_in_trace))
+
+    timestamps = []
+    for index, step in enumerate(events_in_trace):
+        record_id = step["record_node_id"].split(":", 1)[1]
+        record = interactions[record_id]
+        timestamp = datetime.fromtimestamp(record["occurred_at"], timezone.utc).isoformat().replace("+00:00", "Z")
+        timestamps.append(timestamp)
+        row = events.locator(".inspect-step").nth(index)
+        expect(row.get_by_text(record_id, exact=True)).to_be_visible()
+        expect(row.locator("time")).to_have_attribute("datetime", timestamp)
+        values = [agents[record["agent_id"]], resources[record["resource_id"]], record["action"], record["outcome"]]
+        if record["recipient_id"]:
+            values.append(agents[record["recipient_id"]])
+        for value in values:
+            expect(row.get_by_text(value, exact=True).first).to_be_visible()
+    assert timestamps == sorted(timestamps), timestamps
+
+    for step in permissions_in_trace:
+        record_id = step["record_node_id"].split(":", 1)[1]
+        row = policy.locator(".inspect-step").filter(has=page.get_by_text(record_id, exact=True))
+        permission = permissions[record_id]
+        policy_label = "Baseline approval" if permission["kind"] == "baseline" else "Current grant"
+        expect(row.locator(".inspect-step-policy")).to_have_text(f"Policy record · {policy_label}")
+        for field in ("Event time", "Outcome"):
+            value = row.locator("dl > div").filter(has=page.get_by_text(field, exact=True)).locator("dd")
+            expect(value).to_have_text("Unavailable")
+        expect(row.locator("time")).to_have_count(0)
+
+
+def check_record_details(page: Page, finding: dict, data: dict) -> None:
     select_finding(page, finding)
+    check_evidence_timeline(page, finding, data)
     inspector = page.locator("#inspector")
     evidence = finding["evidence"]
     rule_id = finding["rule_id"]
@@ -248,6 +316,17 @@ def check_search(page: Page, graph: Locator) -> None:
     print("Verified search across all five categories, name and ID queries, empty results and keyboard selection.")
 
 
+def drag_card(page: Page, card: Locator) -> None:
+    card.scroll_into_view_if_needed()
+    box = card.bounding_box()
+    assert box
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x + 45, y + 35, steps=10)
+    page.mouse.up()
+
+
 def check_graph_movement(page: Page, graph: Locator) -> None:
     page.get_by_role("combobox", name="Select an AI agent").select_option("agent:agent-preview")
     expect(inspector_heading(page, "Preview Agent")).to_be_visible()
@@ -290,19 +369,115 @@ def check_graph_movement(page: Page, graph: Locator) -> None:
         arg=panned,
     )
     node = graph.locator('.react-flow__node[data-id="agent:agent-preview"]')
-    preview.scroll_into_view_if_needed()
-    box = preview.bounding_box()
-    assert box
     initial_position = node.evaluate("node => node.style.transform")
-    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
-    page.mouse.move(x, y)
-    page.mouse.down()
-    page.mouse.move(x + 45, y + 35, steps=10)
-    page.mouse.up()
+    drag_card(page, preview)
     assert node.evaluate("node => node.style.transform") != initial_position
     exact_button(page.locator("#graph"), "Reset Graph").click()
     expect(node).to_have_attribute("style", re.compile(re.escape(initial_position)))
     print("Verified graph selection with picker, mouse and keyboard, plus pan, zoom, fit, drag and layout reset.")
+
+
+def check_focus_mode(
+    page: Page, graph: Locator, finding: dict, screenshots: Path | None, *, touch: bool = False,
+) -> None:
+    select_finding(page, finding)
+    toolbar = page.get_by_role("group", name="Investigation controls")
+
+    def activate(button: Locator) -> None:
+        if touch:
+            button.tap()
+        else:
+            button.click()
+
+    activate(exact_button(toolbar, "Step Through Evidence"))
+    activate(exact_button(toolbar, "Next evidence step"))
+    step = finding["investigation"]["steps"][1]
+    selected = graph.locator(".react-flow__node:has(.graph-record--selected)")
+    expect(selected).to_have_attribute("data-id", step["record_node_id"])
+    node_position = selected.evaluate("node => node.style.transform")
+    if not touch:
+        drag_card(page, selected.get_by_role("button"))
+        assert selected.evaluate("node => node.style.transform") != node_position
+
+    pre_zoom = graph_state(graph)["zoom"]
+    activate(exact_button(graph, "Zoom in"))
+    page.wait_for_function("""previous => {
+        const viewport = document.querySelector('.react-flow__viewport');
+        return new DOMMatrixReadOnly(getComputedStyle(viewport).transform).a > previous + .001;
+    }""", arg=pre_zoom)
+    viewport = graph.locator(".react-flow__viewport")
+    original_viewport = viewport.element_handle()
+    original_camera = graph_state(graph)
+    original_position = selected.evaluate("node => node.style.transform")
+    inspector = page.locator("#inspector")
+    workspace = page.get_by_role("region", name="Investigation workspace")
+    expand = exact_button(workspace, "Expand Investigation")
+    exit_focus = exact_button(workspace, "Exit Focus Mode")
+
+    def assert_retained() -> None:
+        viewport.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+        assert viewport.evaluate("(element, original) => element === original", original_viewport)
+        assert selected.evaluate("node => node.style.transform") == original_position
+        assert graph_ids(graph, ".react-flow__node:has(.graph-record--step)") == set(step["node_ids"])
+        assert graph_ids(graph, ".react-flow__edge.graph-edge--step") == set(step["edge_ids"])
+        expect(toolbar.get_by_role("status")).to_contain_text(step["title"])
+        current_camera = graph_state(graph)
+        assert abs(current_camera["zoom"] - original_camera["zoom"]) < 0.01, current_camera
+        for axis in ("centerX", "centerY"):
+            assert abs(current_camera[axis] - original_camera[axis]) < 6, (axis, original_camera, current_camera)
+
+    def assert_expanded() -> None:
+        expect(exit_focus).to_be_visible()
+        expect(page.get_by_role("banner")).to_be_visible()
+        expect(page.get_by_role("heading", level=1, name="Security Intelligence Overview")).to_be_hidden()
+        bounds = workspace.bounding_box()
+        viewport_size = page.viewport_size
+        assert bounds and viewport_size
+        assert bounds["width"] >= viewport_size["width"] * 0.89, bounds
+        assert bounds["height"] >= viewport_size["height"] * 0.72, bounds
+
+    active_step = exact_button(inspector, step["title"])
+    expect(active_step).to_have_attribute("aria-pressed", "true")
+    activate(expand)
+    assert_expanded()
+    assert_retained()
+
+    if touch:
+        expect(inspector).to_be_hidden()
+        if screenshots is not None:
+            page.screenshot(path=screenshots / f"focus-mobile-{page.viewport_size['width']}-graph.png")
+    else:
+        expect(active_step).to_have_attribute("aria-pressed", "true")
+        activate(exact_button(workspace, "Hide Inspector"))
+        expect(inspector).to_be_hidden()
+        assert_retained()
+
+    activate(exact_button(workspace, "Show Inspector"))
+    expect(active_step).to_have_attribute("aria-pressed", "true")
+    assert_retained()
+    if screenshots is not None:
+        mode = f"mobile-{page.viewport_size['width']}" if touch else "desktop"
+        page.screenshot(path=screenshots / f"focus-{mode}.png")
+
+    page.keyboard.press("Escape")
+    expect(expand).to_be_focused()
+    expect(active_step).to_have_attribute("aria-pressed", "true")
+    assert_retained()
+    activate(expand)
+    assert_expanded()
+    activate(exit_focus)
+    expect(expand).to_be_focused()
+    expect(active_step).to_have_attribute("aria-pressed", "true")
+    assert_retained()
+
+    activate(expand)
+    activate(exact_button(toolbar, "Next evidence step"))
+    last_step = finding["investigation"]["steps"][2]
+    expect(toolbar.get_by_role("status")).to_contain_text(last_step["title"])
+    assert graph_ids(graph, ".react-flow__edge.graph-edge--step") == set(last_step["edge_ids"])
+    activate(exit_focus)
+    expect(exact_button(inspector, last_step["title"])).to_have_attribute("aria-pressed", "true")
+    assert page.evaluate("document.documentElement.scrollWidth === window.innerWidth")
 
 
 def watch_errors(page: Page) -> list[str]:
@@ -356,8 +531,10 @@ def check_desktop(browser: Browser, url: str, screenshots: Path | None) -> dict:
 
     for finding in findings.values():
         check_investigation(page, graph, finding, data["edges"])
-        check_record_details(page, finding)
+        check_record_details(page, finding, data)
     capture(page, screenshots, "desktop-chain.png")
+    check_focus_mode(page, graph, findings["suspicious_chain"], screenshots)
+    print("Verified desktop Focus Mode, Inspector toggling, and retention of evidence, camera and a dragged position.")
 
     check_search(page, graph)
     check_graph_movement(page, graph)
@@ -391,9 +568,67 @@ def check_mobile(browser: Browser, url: str, width: int, finding: dict, screensh
     assert page.evaluate("document.documentElement.scrollWidth") == width
     assert page.evaluate("window.innerWidth") == width
     capture(page, screenshots, f"mobile-{width}.png")
+    check_focus_mode(page, graph, finding, screenshots, touch=True)
     assert not errors, errors
     page.close()
-    print(f"Verified navigation, touch zoom and evidence steps without overflow at {width}px.")
+    print(f"Verified navigation, touch zoom, evidence steps and Focus Mode without overflow at {width}px.")
+
+
+def check_short_viewport(
+    browser: Browser, url: str, width: int, height: int, finding: dict, screenshots: Path | None,
+) -> None:
+    page = browser.new_page(
+        viewport={"width": width, "height": height},
+        is_mobile=True,
+        has_touch=True,
+        reduced_motion="reduce",
+    )
+    errors = watch_errors(page)
+    page.goto(f"{url}/")
+    select_finding(page, finding)
+    graph = page.get_by_role("region", name=GRAPH_NAME)
+    workspace = page.get_by_role("region", name="Investigation workspace")
+    expand = exact_button(workspace, "Expand Investigation")
+    exit_focus = exact_button(workspace, "Exit Focus Mode")
+    inspector = page.locator("#inspector")
+    expand.tap()
+    expect(exit_focus).to_be_visible()
+    expect(inspector).to_be_hidden()
+
+    for inspector_state in ("hidden", "shown"):
+        if inspector_state == "shown":
+            exact_button(workspace, "Show Inspector").tap()
+            expect(inspector_heading(page, finding["category"])).to_be_visible()
+        graph.scroll_into_view_if_needed()
+        bounds = graph.bounding_box()
+        assert bounds and bounds["height"] >= 220, (width, height, inspector_state, bounds)
+        visible_height = graph.evaluate("""canvas => new Promise(resolve => {
+            const observer = new IntersectionObserver(([entry]) => {
+                observer.disconnect();
+                resolve(entry.intersectionRect.height);
+            });
+            observer.observe(canvas);
+        })""")
+        assert visible_height >= 214, (width, height, inspector_state, visible_height)
+        assert page.evaluate("document.documentElement.scrollWidth") == width
+        check_zoom(page, graph, touch=True)
+        if screenshots is not None:
+            page.screenshot(path=screenshots / f"focus-short-{width}x{height}-{inspector_state}.png")
+
+    exact_button(workspace, "Hide Inspector").tap()
+    expect(inspector).to_be_hidden()
+    navigation = page.get_by_role("navigation", name="Primary navigation")
+    navigation.get_by_role("link", name="Findings", exact=True).tap()
+    expect(expand).to_be_visible()
+    expect(page).to_have_url(re.compile(r"#findings$"))
+    expect(inspector_heading(page, finding["category"])).to_be_visible()
+    expand.tap()
+    exit_focus.tap()
+    expect(expand).to_be_visible()
+    expect(inspector_heading(page, finding["category"])).to_be_visible()
+    assert not errors, errors
+    page.close()
+    print(f"Verified scrollable Focus Mode and usable canvas with Inspector hidden or shown at {width}×{height}.")
 
 
 def check_partial_trace(browser: Browser, url: str, data: dict) -> None:
@@ -454,6 +689,8 @@ def main() -> None:
         chain = next(finding for finding in data["findings"] if finding["rule_id"] == "suspicious_chain")
         for width in (390, 320):
             check_mobile(browser, url, width, chain, args.screenshots)
+        for width, height in ((320, 568), (667, 375)):
+            check_short_viewport(browser, url, width, height, chain, args.screenshots)
         check_partial_trace(browser, url, data)
         check_error_recovery(browser, url)
         browser.close()

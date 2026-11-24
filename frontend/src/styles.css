@@ -137,7 +137,7 @@ ul { padding: 0; list-style: none; }
 .source-status[data-status='error'] .source-dot { background: var(--risk); }
 .source-mode { color: var(--muted); font-size: 11px; font-weight: 460; }
 
-.refresh-button, .reset-button, .agent-picker, .investigation-actions button, .step-actions button {
+.refresh-button, .reset-button, .workspace-button, .agent-picker, .investigation-actions button, .step-actions button {
   min-height: 34px;
   border: 1px solid var(--border-strong);
   border-radius: var(--control-radius);
@@ -147,7 +147,7 @@ ul { padding: 0; list-style: none; }
   font-weight: 580;
 }
 
-.refresh-button, .reset-button {
+.refresh-button, .reset-button, .workspace-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -156,7 +156,7 @@ ul { padding: 0; list-style: none; }
   white-space: nowrap;
 }
 
-:where(.refresh-button, .reset-button, .agent-picker, .investigation-actions button, .step-actions button):hover:not(:disabled) {
+:where(.refresh-button, .reset-button, .workspace-button, .agent-picker, .investigation-actions button, .step-actions button):hover:not(:disabled) {
   background: #25262a;
   border-color: #595b61;
 }
@@ -344,8 +344,11 @@ ul { padding: 0; list-style: none; }
 .analysis-layout > * { min-width: 0; }
 .graph-panel { display: grid; }
 .graph-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 11px 12px; }
+.graph-titlebar { display: flex; align-items: center; justify-content: space-between; gap: 6px 10px; }
+.workspace-controls { display: flex; flex-wrap: wrap; gap: 5px; }
+.workspace-button > svg { flex-shrink: 0; }
 .graph-heading p span { margin-inline: 2px; }
-.graph-actions { display: flex; align-items: center; justify-content: end; gap: 6px; flex: 0 1 635px; min-width: 0; }
+.graph-actions { display: flex; align-items: center; justify-content: end; gap: 6px; flex: 0 1 560px; min-width: 0; }
 .agent-picker { flex: 0 1 auto; width: 152px; min-width: 128px; max-width: 100%; padding-inline: 7px 12px; }
 .reset-button { flex: none; }
 
@@ -388,7 +391,7 @@ ul { padding: 0; list-style: none; }
 .graph-viewport {
   position: relative;
   min-width: 0;
-  height: clamp(525px, 69svh, 830px);
+  height: clamp(460px, 60svh, 620px);
   border-block: 1px solid var(--border);
   background: var(--surface-deep);
 }
@@ -397,6 +400,65 @@ ul { padding: 0; list-style: none; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 9px 12px; color: var(--muted); font-size: 10px; }
 .legend li { display: inline-flex; align-items: center; gap: 5px; }
 .legend svg { color: var(--steel); }
+
+/* Expand the existing workspace so the graph and Inspector keep their state. */
+:is(.overview, .findings-panel, .investigation-inspector)[hidden] { display: none; }
+
+.dashboard-shell[data-workspace-expanded] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100dvh;
+}
+
+.dashboard-shell[data-workspace-expanded] .main-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+  padding: clamp(5px, 1vw, 13px);
+}
+
+.dashboard-shell[data-workspace-expanded] .analysis-workspace {
+  flex: 1;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+}
+
+.analysis-layout[data-expanded] {
+  grid-template-columns: minmax(0, 1fr) clamp(290px, 26vw, 420px);
+  align-items: stretch;
+  gap: 8px;
+}
+
+.analysis-layout[data-expanded][data-inspector-hidden] { grid-template-columns: minmax(0, 1fr); }
+
+.analysis-layout[data-expanded] .graph-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.analysis-layout[data-expanded] .graph-viewport {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+
+.analysis-layout[data-expanded] .investigation-inspector:not([hidden]) {
+  position: static;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-self: stretch;
+  min-height: 0;
+  max-height: none;
+}
+
+.analysis-layout[data-expanded] .inspect-body {
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+}
 
 .request-state {
   display: grid;
@@ -423,8 +485,12 @@ ul { padding: 0; list-style: none; }
   .findings-panel { grid-template-columns: 1fr; gap: 6px; }
   .findings-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
   .analysis-layout { grid-template-columns: minmax(0, 1fr); }
-  .graph-heading { display: flex; }
-  .graph-viewport { height: clamp(475px, 68svh, 670px); }
+  .analysis-layout[data-expanded] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 35%);
+  }
+  .analysis-layout[data-expanded][data-inspector-hidden] { grid-template-rows: minmax(0, 1fr); }
+  .graph-viewport { height: clamp(390px, 60svh, 530px); }
 }
 
 @media (max-width: 730px) {
@@ -463,6 +529,8 @@ ul { padding: 0; list-style: none; }
   .findings-panel { padding: 8px; }
   .findings-list { grid-auto-columns: minmax(180px, 58%); }
   .graph-heading { padding: 8px; }
+  .graph-titlebar { flex-wrap: wrap; }
+  .analysis-layout[data-expanded] .graph-titlebar p { display: none; }
   .graph-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
   .graph-actions .record-search { grid-column: 1 / -1; width: 100%; max-width: none; }
   .agent-picker { width: 100%; }
@@ -470,7 +538,7 @@ ul { padding: 0; list-style: none; }
   .investigation-actions button { justify-content: flex-start; font-size: 10px; }
   .investigation-actions button svg { flex-shrink: 0; }
   .graph-selection { padding-inline: 8px; }
-  .graph-viewport { height: clamp(410px, 64svh, 530px); }
+  .graph-viewport { height: clamp(350px, 56svh, 430px); }
 }
 
 @media (max-width: 360px) {
@@ -481,6 +549,16 @@ ul { padding: 0; list-style: none; }
   .source-dot { grid-row: 1 / 3; }
   .source-mode { grid-column: 2; }
   .metric dt { flex-wrap: wrap; }
+}
+
+@media (max-width: 900px) and (max-height: 700px) {
+  .dashboard-shell[data-workspace-expanded] { height: auto; min-height: 100dvh; }
+  .analysis-layout[data-expanded],
+  .analysis-layout[data-expanded][data-inspector-hidden] { grid-template-rows: none; }
+  .analysis-layout[data-expanded] .graph-viewport { min-height: clamp(224px, 57dvh, 360px); }
+  .analysis-layout[data-expanded] .investigation-inspector:not([hidden]) {
+    max-height: min(300px, 55dvh);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

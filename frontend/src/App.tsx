@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type RefObject } from 'react'
 import {
   ArrowDown, ArrowLeft, ArrowRight, Bot, Box, ChevronRight, Crosshair, Database, GitBranch, GitFork,
-  KeyRound, Link2, LoaderCircle, RefreshCw, RotateCcw, ScanLine,
+  KeyRound, Link2, LoaderCircle, Maximize2, Minimize2, PanelRightClose, PanelRightOpen, RefreshCw, RotateCcw, ScanLine,
   ShieldAlert, ShieldCheck, TriangleAlert, Workflow,
 } from 'lucide-react'
 import { getDashboard } from './api'
@@ -117,7 +117,7 @@ function graphFocus(selection: Selection | null, edges: GraphEdge[]): GraphFocus
   }
 }
 
-function Overview({ data }: { data?: Dashboard }) {
+function Overview({ data, hidden }: { data?: Dashboard; hidden: boolean }) {
   const metrics = data ? [
     { label: 'AI agents', count: data.agents.length, Icon: Bot },
     { label: 'Resources', count: data.resources.length, Icon: Box },
@@ -125,7 +125,7 @@ function Overview({ data }: { data?: Dashboard }) {
   ] : []
 
   return (
-    <section className="overview" id="overview" aria-labelledby="overview-title">
+    <section className="overview" id="overview" aria-labelledby="overview-title" hidden={hidden}>
       <div className="overview-intro">
         <div className="overview-heading">
           <h1 id="overview-title">Security Intelligence Overview</h1>
@@ -188,9 +188,10 @@ function FindingCard({ finding, data, selected, onSelect }: {
   )
 }
 
-function InvestigationToolbar({ selection, onViewChange }: {
+function InvestigationToolbar({ selection, onViewChange, onInspect }: {
   selection: FindingSelection
   onViewChange: (view: FindingView) => void
+  onInspect: () => void
 }) {
   const { finding, view } = selection
   const trace = finding.investigation
@@ -237,19 +238,26 @@ function InvestigationToolbar({ selection, onViewChange }: {
             </button>
           </div>
         )}
-        <a href="#inspector">Inspect finding <ChevronRight size={14} aria-hidden="true" /></a>
+        <a href="#inspector" onClick={onInspect}>Inspect finding <ChevronRight size={14} aria-hidden="true" /></a>
       </div>
     </div>
   )
 }
 
-function DashboardContent({ data }: { data: Dashboard }) {
+function DashboardContent({ data, expanded, onExpandedChange, expandButton }: {
+  data: Dashboard
+  expanded: boolean
+  onExpandedChange: (expanded: boolean) => void
+  expandButton: RefObject<HTMLButtonElement | null>
+}) {
   const [selection, setSelection] = useState<Selection | null>(null)
   const [graphRevision, setGraphRevision] = useState(0)
+  const [inspectorCollapsed, setInspectorCollapsed] = useState<boolean | null>(null)
   const focus = useMemo(() => graphFocus(selection, data.edges), [selection, data.edges])
   const selectedFinding = selection?.kind === 'finding' ? selection : undefined
   const selectedNode = selection?.kind === 'node' ? selection.node : undefined
   const selectedAgent = selectedNode?.kind === 'agent' ? selectedNode.id : ''
+  const inspectorHidden = expanded && inspectorCollapsed === true
   const onNodeSelect = useCallback((node: GraphNode) => setSelection({ kind: 'node', node }), [])
   const onFindingSelect = useCallback((finding: Finding) => setSelection({ kind: 'finding', finding, view: { mode: 'path' } }), [])
 
@@ -266,9 +274,20 @@ function DashboardContent({ data }: { data: Dashboard }) {
     setGraphRevision((current) => current + 1)
   }
 
+  function toggleExpanded() {
+    if (!expanded && inspectorCollapsed === null) {
+      setInspectorCollapsed(window.matchMedia('(max-width: 900px)').matches)
+    }
+    onExpandedChange(!expanded)
+  }
+
+  function revealInspector() {
+    if (inspectorHidden) setInspectorCollapsed(false)
+  }
+
   return (
     <div className="analysis-workspace">
-      <section className="findings-panel panel" id="findings" aria-labelledby="findings-title">
+      <section className="findings-panel panel" id="findings" aria-labelledby="findings-title" hidden={expanded}>
         <header className="findings-heading">
           <h2 id="findings-title">Findings <span className="panel-counter">{data.findings.length}</span></h2>
           <p>Select a finding to trace its evidence.</p>
@@ -289,12 +308,29 @@ function DashboardContent({ data }: { data: Dashboard }) {
         ) : <p className="empty-message"><ShieldCheck size={18} aria-hidden="true" /> The rules returned no findings.</p>}
       </section>
 
-      <div className="analysis-layout">
+      <div className="analysis-layout" id="investigation-workspace" role="region" aria-label="Investigation workspace"
+        data-expanded={expanded ? '' : undefined} data-inspector-hidden={inspectorHidden ? '' : undefined}>
         <section className="panel graph-panel" id="graph" aria-labelledby="graph-title">
           <header className="graph-heading">
-            <div>
-              <h2 id="graph-title">Intelligence Graph</h2>
-              <p>{data.nodes.length.toLocaleString('en')} nodes <span aria-hidden="true">·</span> {data.edges.length.toLocaleString('en')} relationships</p>
+            <div className="graph-titlebar">
+              <div>
+                <h2 id="graph-title">Intelligence Graph</h2>
+                <p>{data.nodes.length.toLocaleString('en')} nodes <span aria-hidden="true">·</span> {data.edges.length.toLocaleString('en')} relationships</p>
+              </div>
+              <div className="workspace-controls">
+                {expanded && (
+                  <button className="workspace-button" type="button" aria-expanded={!inspectorHidden} aria-controls="inspector"
+                    onClick={() => setInspectorCollapsed(!inspectorHidden)}>
+                    {inspectorHidden ? <PanelRightOpen size={14} aria-hidden="true" /> : <PanelRightClose size={14} aria-hidden="true" />}
+                    {inspectorHidden ? 'Show Inspector' : 'Hide Inspector'}
+                  </button>
+                )}
+                <button ref={expandButton} className="workspace-button" type="button" aria-expanded={expanded}
+                  aria-controls="investigation-workspace" onClick={toggleExpanded}>
+                  {expanded ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}
+                  {expanded ? 'Exit Focus Mode' : 'Expand Investigation'}
+                </button>
+              </div>
             </div>
             <div className="graph-actions">
               <RecordSearch key={graphRevision} data={data} onNodeSelect={onNodeSelect} onFindingSelect={onFindingSelect} />
@@ -318,16 +354,16 @@ function DashboardContent({ data }: { data: Dashboard }) {
               </button>
             </div>
           </header>
-          {selectedFinding && <InvestigationToolbar selection={selectedFinding} onViewChange={changeView} />}
+          {selectedFinding && <InvestigationToolbar selection={selectedFinding} onViewChange={changeView} onInspect={revealInspector} />}
           {selectedNode && (
             <div className="graph-selection entity-selection">
               <p role="status"><span>Selected entity</span> {selectedNode.label}</p>
-              <a href="#inspector">Inspect entity <ChevronRight size={14} aria-hidden="true" /></a>
+              <a href="#inspector" onClick={revealInspector}>Inspect entity <ChevronRight size={14} aria-hidden="true" /></a>
             </div>
           )}
           <div className="graph-viewport">
             {data.nodes.length ? (
-              <IntelligenceGraph key={graphRevision} nodes={data.nodes} edges={data.edges} focus={focus} onNodeSelect={onNodeSelect} />
+              <IntelligenceGraph key={graphRevision} nodes={data.nodes} edges={data.edges} focus={focus} onNodeSelect={onNodeSelect} expanded={expanded} />
             ) : <p className="graph-empty">The Relate file contains no graph records.</p>}
           </div>
           <ul className="legend" aria-label="Graph node types">
@@ -339,6 +375,7 @@ function DashboardContent({ data }: { data: Dashboard }) {
 
         <Inspector
           data={data}
+          hidden={inspectorHidden}
           node={selectedNode}
           finding={selectedFinding?.finding}
           activeStepIndex={selectedFinding?.view.mode === 'step' ? selectedFinding.view.index : undefined}
@@ -354,6 +391,43 @@ export default function App() {
   const [request, setRequest] = useState<RequestState>({ status: 'loading' })
   const [revision, setRevision] = useState(0)
   const [activeSection, setActiveSection] = useState(sectionFromHash)
+  const [expanded, setExpanded] = useState(false)
+  const expandButton = useRef<HTMLButtonElement>(null)
+  const returnScroll = useRef<number | null>(null)
+  const navigationTarget = useRef<string | null>(null)
+
+  function changeExpanded(next: boolean) {
+    if (next) returnScroll.current = window.scrollY
+    setExpanded(next)
+  }
+
+  useLayoutEffect(() => {
+    if (expanded) {
+      expandButton.current?.focus({ preventScroll: true })
+      window.scrollTo(0, 0)
+      return
+    }
+    if (navigationTarget.current) {
+      const id = navigationTarget.current
+      navigationTarget.current = null
+      if (window.location.hash !== `#${id}`) window.location.hash = id
+      else document.getElementById(id)?.scrollIntoView()
+    } else if (returnScroll.current !== null) {
+      window.scrollTo(0, returnScroll.current)
+      expandButton.current?.focus({ preventScroll: true })
+    }
+    returnScroll.current = null
+  }, [expanded])
+
+  useEffect(() => {
+    if (!expanded) return
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape' && !event.defaultPrevented) setExpanded(false)
+    }
+    document.addEventListener('keydown', handleEscape)
+    return () => document.removeEventListener('keydown', handleEscape)
+  }, [expanded])
 
   useEffect(() => {
     const updateSection = () => setActiveSection(sectionFromHash())
@@ -382,6 +456,8 @@ export default function App() {
   }, [request.status])
 
   function refresh() {
+    returnScroll.current = null
+    setExpanded(false)
     setRequest({ status: 'loading' })
     setRevision((current) => current + 1)
   }
@@ -390,19 +466,28 @@ export default function App() {
     ? (request.data.source.read_only ? 'Read-only' : 'Connected')
     : request.status === 'loading' ? 'Loading' : 'Unavailable'
   const availableSections = request.status === 'loaded' ? navigation : navigation.slice(0, 1)
+  const currentSection = expanded ? 'graph' : activeSection
+
+  function navigateFromWorkspace(id: string, event: MouseEvent<HTMLAnchorElement>) {
+    if (!expanded || id === 'graph' || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return
+    event.preventDefault()
+    navigationTarget.current = id
+    setExpanded(false)
+  }
 
   return (
-    <>
+    <div className="dashboard-shell" data-workspace-expanded={expanded ? '' : undefined}>
       <a className="skip-link" href="#main">Skip to dashboard</a>
       <header className="site-header">
         <div className="site-header-inner">
-          <a className="brand" href="#overview" aria-label="VARKHARD overview">
+          <a className="brand" href="#overview" aria-label="VARKHARD overview" onClick={(event) => navigateFromWorkspace('overview', event)}>
             <img className="brand-emblem" src="/varkhard-shield.svg" alt="" width="24" height="28" />
             <span>VARKHARD</span>
           </a>
           <nav className="top-navigation" aria-label="Primary navigation">
             {availableSections.map(({ id, label }) => (
-              <a key={id} href={`#${id}`} aria-current={activeSection === id ? 'location' : undefined}>{label}</a>
+              <a key={id} href={`#${id}`} aria-current={currentSection === id ? 'location' : undefined}
+                onClick={(event) => navigateFromWorkspace(id, event)}>{label}</a>
             ))}
           </nav>
           <div className="header-actions">
@@ -420,9 +505,11 @@ export default function App() {
       </header>
 
       <main id="main" className="main-content" tabIndex={-1}>
-        <Overview data={request.status === 'loaded' ? request.data : undefined} />
+        <Overview data={request.status === 'loaded' ? request.data : undefined} hidden={expanded} />
 
-        {request.status === 'loaded' && <DashboardContent data={request.data} />}
+        {request.status === 'loaded' && (
+          <DashboardContent data={request.data} expanded={expanded} onExpandedChange={changeExpanded} expandButton={expandButton} />
+        )}
         {request.status === 'loading' && (
           <div className="panel request-state" role="status">
             <LoaderCircle className="spinner" size={22} aria-hidden="true" /> Loading graph from Relate…
@@ -437,6 +524,6 @@ export default function App() {
           </div>
         )}
       </main>
-    </>
+    </div>
   )
 }

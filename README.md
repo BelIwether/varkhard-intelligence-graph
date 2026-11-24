@@ -52,7 +52,8 @@ For frontend development, keep the API running on port `8010` and run `npm run d
 | **Trace Origin** | Focuses the earliest supported interaction or the relevant permission mismatch. |
 | **Highlight Full Path** | Highlights all available nodes and links in the finding's trace. |
 | **Show Affected Nodes** | Focuses directly involved records and their supported relationships. |
-| **Step Through Evidence** | Highlights evidence one step at a time. Use the step controls or select a step in the Inspector. |
+| **Step Through Evidence** | Highlights evidence one step at a time. Use the step controls or select an entry in the Inspector's timeline or policy comparison. |
+| **Expand Investigation** | Gives the graph the workspace beneath the top navigation. Show or hide the Inspector as needed. Press **Escape** or select **Exit Focus Mode** to return to the dashboard with the current investigation and graph position. |
 | **Reset Graph** | Clears the investigation selection and restores the default viewport and layout. |
 
 For the demo Suspicious Chain, start at the Research Agent's read and follow the recorded handoff to the Relay Agent and its export to the simulated external outbox. The Inspector shows the timestamps, outcomes, and 180-second span within the rule's 600-second observation window.

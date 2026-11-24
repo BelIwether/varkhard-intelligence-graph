@@ -164,6 +164,40 @@ def test_inconsistent_suspicious_chain_yields_only_supported_segments(demo_graph
     assert all(edge.kind != "TRIGGERS" for edge in demo_graph.edges if edge.id in trace.edge_ids)
 
 
+@pytest.mark.parametrize(("kind", "source_id", "target_id", "target_kind"), [
+    ("TRIGGERS", "interaction-ledger-handoff", "interaction-outbox-export", "interaction"),
+    ("HANDED_TO", "interaction-ledger-handoff", "agent-relay", "agent"),
+])
+def test_suspicious_trace_never_reconstructs_a_removed_relationship(tmp_path, kind, source_id, target_id, target_kind):
+    path = tmp_path / "missing-relationship.rl"
+    with GraphStore(path) as store:
+        seed_demo(store)
+        original = read_graph(store, path.name)
+        store.query(
+            f"MATCH (source:Interaction {{id: $source_id}})-[edge:{kind}]->(target {{id: $target_id}}) DELETE edge",
+            {"source_id": source_id, "target_id": target_id},
+        )
+        graph = read_graph(store, path.name)
+
+    finding = next(finding for finding in original.findings if finding.rule_id == "suspicious_chain")
+    removed = next(
+        edge for edge in original.edges
+        if (edge.kind, edge.source, edge.target) == (kind, f"interaction:{source_id}", f"{target_kind}:{target_id}")
+    )
+    assert removed.id in finding.investigation.edge_ids
+    assert removed.id not in {edge.id for edge in graph.edges}
+    assert graph.interactions == original.interactions
+    assert all(finding.rule_id != "suspicious_chain" for finding in graph.findings)
+
+    builder = InvestigationBuilder(graph.nodes, graph.edges, graph.permissions, graph.interactions)
+    partial = builder.build(Finding(finding.rule_id, finding.explanation, finding.evidence))
+    assert not partial.complete
+    assert [step.record_node_id for step in partial.steps] == [
+        step.record_node_id for step in finding.investigation.steps
+    ]
+    assert partial.edge_ids == [edge_id for edge_id in finding.investigation.edge_ids if edge_id != removed.id]
+
+
 @pytest.mark.parametrize("damage", [
     "MATCH (:AIAgent)-[edge:PERFORMED]->(:Interaction {id: 'interaction-ledger-handoff'}) DELETE edge",
     "MATCH (event:Interaction {id: 'interaction-ledger-handoff'}) SET event.occurred_at = 4611686018427387904",
