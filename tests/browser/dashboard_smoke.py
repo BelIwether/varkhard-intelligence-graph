@@ -43,58 +43,69 @@ def graph_state(graph: Locator) -> dict[str, float]:
 def check_graph_geometry(
     graph: Locator, node_ids: list[str], numbered_triggers: list[int], state: str,
 ) -> None:
-    geometry = graph.evaluate(r"""async (graph, nodeIds) => {
-        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        const frame = graph.getBoundingClientRect();
-        const issues = [];
-        const inside = box =>
-            box.width > 0 && box.height > 0 &&
-            box.left >= frame.left - 1 && box.right <= frame.right + 1 &&
-            box.top >= frame.top - 1 && box.bottom <= frame.bottom + 1;
-        const overlaps = (a, b) =>
-            Math.min(a.right, b.right) > Math.max(a.left, b.left) + 0.5 &&
-            Math.min(a.bottom, b.bottom) > Math.max(a.top, b.top) + 0.5;
+    geometry = graph.evaluate(r"""async (graph, [nodeIds, expectedLabels]) => {
+        const inspect = () => {
+            const frame = graph.getBoundingClientRect();
+            const issues = [];
+            const inside = box =>
+                box.width > 0 && box.height > 0 &&
+                box.left >= frame.left - 1 && box.right <= frame.right + 1 &&
+                box.top >= frame.top - 1 && box.bottom <= frame.bottom + 1;
+            const overlaps = (a, b) =>
+                Math.min(a.right, b.right) > Math.max(a.left, b.left) + 0.5 &&
+                Math.min(a.bottom, b.bottom) > Math.max(a.top, b.top) + 0.5;
 
-        const cards = new Map();
-        const obstacles = [];
-        for (const node of graph.querySelectorAll('.react-flow__node')) {
-            const id = node.dataset.id;
-            const card = node.querySelector('.graph-record');
-            if (card) cards.set(id, card);
-            for (const element of node.querySelectorAll('.graph-record, .graph-record__marker, .graph-lane')) {
-                obstacles.push({ id, box: element.getBoundingClientRect() });
+            const cards = new Map();
+            const obstacles = [];
+            for (const node of graph.querySelectorAll('.react-flow__node')) {
+                const id = node.dataset.id;
+                const card = node.querySelector('.graph-record');
+                if (card) cards.set(id, card);
+                for (const element of node.querySelectorAll('.graph-record, .graph-record__marker, .graph-lane')) {
+                    obstacles.push({ id, box: element.getBoundingClientRect() });
+                }
             }
-        }
-        for (const id of nodeIds) {
-            const card = cards.get(id);
-            if (!card) {
-                issues.push(`missing card ${id}`);
-                continue;
+            for (const id of nodeIds) {
+                const card = cards.get(id);
+                if (!card) {
+                    issues.push(`missing card ${id}`);
+                    continue;
+                }
+                for (const element of [card, ...card.querySelectorAll('.graph-record__marker')]) {
+                    if (!inside(element.getBoundingClientRect())) issues.push(`clipped card ${id}`);
+                }
             }
-            for (const element of [card, ...card.querySelectorAll('.graph-record__marker')]) {
-                if (!inside(element.getBoundingClientRect())) issues.push(`clipped card ${id}`);
-            }
-        }
 
-        const labels = [];
-        for (const label of graph.querySelectorAll('.graph-edge-label')) {
-            const match = label.textContent.match(/^\s*(\d+)\s*[·.]\s*Triggers\s*$/i);
-            if (!match) continue;
-            const name = label.textContent.trim();
-            const box = label.getBoundingClientRect();
-            if (!inside(box) || getComputedStyle(label).visibility === 'hidden') {
-                issues.push(`clipped label ${name}`);
+            const labels = [];
+            for (const label of graph.querySelectorAll('.graph-edge-label')) {
+                const match = label.textContent.match(/^\s*(\d+)\s*[·.]\s*Triggers\s*$/i);
+                if (!match) continue;
+                const name = label.textContent.trim();
+                const box = label.getBoundingClientRect();
+                if (!inside(box) || getComputedStyle(label).visibility === 'hidden') {
+                    issues.push(`clipped label ${name}`);
+                }
+                for (const obstacle of obstacles) {
+                    if (overlaps(box, obstacle.box)) issues.push(`${name} overlaps ${obstacle.id}`);
+                }
+                for (const previous of labels) {
+                    if (overlaps(box, previous.box)) issues.push(`${name} overlaps ${previous.name}`);
+                }
+                labels.push({ name, box, order: Number(match[1]) });
             }
-            for (const obstacle of obstacles) {
-                if (overlaps(box, obstacle.box)) issues.push(`${name} overlaps ${obstacle.id}`);
-            }
-            for (const previous of labels) {
-                if (overlaps(box, previous.box)) issues.push(`${name} overlaps ${previous.name}`);
-            }
-            labels.push({ name, box, order: Number(match[1]) });
-        }
-        return { issues, labels: labels.map(({ order }) => order).sort((a, b) => a - b) };
-    }""", node_ids)
+            return { issues, labels: labels.map(({ order }) => order).sort((a, b) => a - b) };
+        };
+        // React Flow can schedule a second viewport update after its resize observer runs.
+        const deadline = performance.now() + 1200;
+        let geometry;
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        do {
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            geometry = inspect();
+            if (!geometry.issues.length && geometry.labels.join(',') === expectedLabels.join(',')) break;
+        } while (performance.now() < deadline);
+        return geometry;
+    }""", [node_ids, numbered_triggers])
     assert geometry["labels"] == numbered_triggers, (state, geometry)
     assert not geometry["issues"], (state, geometry["issues"])
 
@@ -132,6 +143,13 @@ def zoom_in_twice(page: Page, graph: Locator, *, touch: bool = False) -> float:
         return new DOMMatrixReadOnly(getComputedStyle(viewport).transform).a > previous + .001;
     }""", arg=initial_zoom)
     return graph_state(graph)["zoom"]
+
+
+def wait_for_refit(page: Page, previous_zoom: float) -> None:
+    page.wait_for_function("""previous => {
+        const viewport = document.querySelector('.react-flow__viewport');
+        return new DOMMatrixReadOnly(getComputedStyle(viewport).transform).a < previous - .001;
+    }""", arg=previous_zoom, timeout=1200)
 
 
 def check_header(page: Page) -> None:
@@ -711,9 +729,9 @@ def check_short_viewport(
         })""")
         assert visible_height >= 214, (width, height, inspector_state, visible_height)
         assert page.evaluate("document.documentElement.scrollWidth") == width
-        check_graph_geometry(graph, path_ids, [1, 2], f"short viewport Inspector {inspector_state}")
         if manual_zoom is not None:
-            assert graph_state(graph)["zoom"] < manual_zoom - 0.001, (width, height, inspector_state)
+            wait_for_refit(page, manual_zoom)
+        check_graph_geometry(graph, path_ids, [1, 2], f"short viewport Inspector {inspector_state}")
         if screenshots is not None:
             page.screenshot(path=screenshots / f"focus-short-{width}x{height}-{inspector_state}.png")
         check_zoom(page, graph, touch=True)
@@ -724,8 +742,9 @@ def check_short_viewport(
 
     exact_button(workspace, "Hide Inspector").tap()
     expect(inspector).to_be_hidden()
+    assert manual_zoom is not None
+    wait_for_refit(page, manual_zoom)
     check_graph_geometry(graph, path_ids, [1, 2], "short viewport Inspector hidden again")
-    assert graph_state(graph)["zoom"] < manual_zoom - 0.001, (width, height, "hidden again")
     navigation = page.get_by_role("navigation", name="Primary navigation")
     navigation.get_by_role("link", name="Findings", exact=True).tap()
     expect(expand).to_be_visible()
