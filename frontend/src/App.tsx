@@ -195,27 +195,39 @@ export default function App() {
       <a className="skip-link" href="#main">Skip to dashboard</a>
       <header className="site-header">
         <div className="site-header-inner">
-          <a className="brand" href="#main">
-            <span className="brand-logo-slot" aria-hidden="true" />
-            VARKHARD
+          <a className="brand" href="#main" aria-label="VARKHARD overview">
+            <span className="brand-name">VARKHARD</span>
+            <span className="brand-subtitle">SECURITY INTELLIGENCE</span>
           </a>
-          {request.status === 'loaded' && (
-            <nav aria-label="Dashboard">
-              <a href="#graph">Graph</a>
-              <a href="#findings">Findings</a>
-            </nav>
-          )}
-          <button className="refresh-button" type="button" onClick={refresh} disabled={request.status === 'loading'}>
-            <RefreshCw size={15} aria-hidden="true" /> Refresh
-          </button>
+          <nav className="top-navigation" aria-label="Primary navigation">
+            <a href="#main">Overview</a>
+            {request.status === 'loaded' && (
+              <>
+                <a href="#graph">Intelligence graph</a>
+                <a href="#findings">Findings <span className="nav-count">{request.data.findings.length}</span></a>
+              </>
+            )}
+          </nav>
+          <div className="header-actions">
+            {request.status === 'loaded' && (
+              <span className="header-source-badge" title="Demo data loaded from the embedded Relate graph">
+                <span className="source-dot" aria-hidden="true" />
+                RELATE · {request.data.source.read_only ? 'READ-ONLY' : 'CONNECTED'}
+              </span>
+            )}
+            <button className="refresh-button" type="button" onClick={refresh} disabled={request.status === 'loading'}>
+              <RefreshCw size={15} aria-hidden="true" /> Refresh
+            </button>
+          </div>
         </div>
       </header>
 
       <main id="main" className="main-content">
         <div className="page-intro">
           <div>
-            <h1>Security dashboard</h1>
-            <p>Trace AI agent activity, review permissions, and investigate findings.</p>
+            <p className="eyebrow">GRAPH SECURITY / OPERATIONAL OVERVIEW</p>
+            <h1>Intelligence overview</h1>
+            <p>Review agent relationships, assess permissions, and investigate graph-based security findings.</p>
           </div>
           {request.status === 'loaded' && (
             <div className="source-status">
