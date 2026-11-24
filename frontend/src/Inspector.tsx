@@ -1,8 +1,9 @@
 import {
-  ArrowDownRight, ArrowRight, ArrowUpRight, Bot, Box, ChevronDown, Crosshair,
-  GitFork, History, KeyRound, Link2, ShieldAlert,
+  ArrowDownRight, ArrowRight, ArrowUpRight, Bot, Box, ChevronDown, CircleHelp, Crosshair,
+  GitFork, History, KeyRound, Link2, Route, ShieldAlert,
 } from 'lucide-react'
-import type { Dashboard, EvidenceValue, Finding, GraphNode, GraphNodeKind } from './api'
+import { useMemo } from 'react'
+import type { Dashboard, EvidenceValue, Finding, GraphEdge, GraphNode, GraphNodeKind } from './api'
 import './inspector.css'
 
 const nodeKinds = {
@@ -38,16 +39,27 @@ const referenceKinds: Partial<Record<string, GraphNodeKind>> = {
 }
 
 const evidenceLabels: Partial<Record<string, string>> = {
-  granted_actions: 'Granted actions',
+  granted_actions: 'Current grants',
   approved_actions: 'Baseline-approved actions',
   related_grant_ids: 'Related grants',
   related_baseline_ids: 'Related baseline approvals',
+  kind: 'Permission record type',
+  outcome: 'Recorded outcome',
   elapsed_seconds: 'Elapsed time (seconds)',
   window_seconds: 'Rule window (seconds)',
   occurred_at: 'Recorded at (UTC)',
 }
 
+const contextFields = {
+  unauthorized_access: ['agent_id', 'resource_id', 'action', 'outcome', 'granted_actions'],
+  excessive_permission: ['agent_id', 'resource_id', 'action', 'kind', 'approved_actions'],
+  suspicious_chain: ['sender_agent_id', 'recipient_agent_id', 'source_resource_id', 'destination_resource_id', 'elapsed_seconds', 'window_seconds'],
+}
+
 type NodesById = ReadonlyMap<string, GraphNode>
+type Investigation = NonNullable<Finding['investigation']>
+type InvestigationStep = Investigation['steps'][number]
+type StepSelection = { activeStepIndex?: number; onStepSelect?: (index: number) => void }
 
 function labelFor(key: string, rule?: Finding['rule_id']) {
   if (key === 'action' && rule === 'unauthorized_access') return 'Requested action'
@@ -107,33 +119,73 @@ function EvidenceFields({ evidence, nodes, rule }: {
   )
 }
 
-function InteractionSequence({ events, nodes }: { events: EvidenceValue; nodes: NodesById }) {
-  if (!Array.isArray(events) || !events.length) {
-    return <EvidenceEntry field="interactions" value={events} nodes={nodes} />
-  }
+function StepFacts({ step, nodes }: { step: InvestigationStep; nodes: NodesById }) {
+  const id = step.record_node_id
+  const occurredAt = step.occurred_at === null ? null : formatTime(step.occurred_at)
 
   return (
-    <ol className="inspect-timeline">
-      {events.map((event, index) => {
-        if (event === null || typeof event !== 'object' || Array.isArray(event)) {
-          return <li key={index}><EvidenceEntry field="interactions" value={event} nodes={nodes} /></li>
-        }
+    <div className="inspect-step-facts">
+      {id && <code>{nodes.get(id)?.record_id ?? id}</code>}
+      {occurredAt && <time className="inspect-time" dateTime={occurredAt}>{occurredAt}</time>}
+      {(step.action || step.outcome) && (
+        <div className="inspect-step-labels">
+          {step.action && <span>Action <strong>{step.action}</strong></span>}
+          {step.outcome && (
+            <span>Outcome <strong className={step.outcome === 'denied' ? 'inspect-denied' : undefined}>{step.outcome}</strong></span>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
-        const { action, occurred_at, ...fields } = event
+function TraceAnchor({ label, step, nodes }: {
+  label: string
+  step: InvestigationStep | null
+  nodes: NodesById
+}) {
+  return (
+    <div className="inspect-trace-anchor">
+      <h5>{label}</h5>
+      {step ? (
+        <>
+          <strong>{step.title}</strong>
+          <p>{step.description}</p>
+          <StepFacts step={step} nodes={nodes} />
+        </>
+      ) : <p>Unavailable in this snapshot.</p>}
+    </div>
+  )
+}
+
+function EvidenceSteps({ steps, nodes, activeStepIndex, onStepSelect }: {
+  steps: InvestigationStep[]
+  nodes: NodesById
+} & StepSelection) {
+  if (!steps.length) return <p className="inspect-muted">No ordered steps were established.</p>
+
+  return (
+    <ol className="inspect-timeline" role="list">
+      {steps.map((step, index) => {
+        const active = index === activeStepIndex
+        const title = (
+          <>
+            <span className="inspect-step-number" aria-hidden="true">{index + 1}</span>
+            <strong>{step.title}</strong>
+            {onStepSelect && <Crosshair size={14} aria-hidden="true" />}
+          </>
+        )
         return (
-          <li key={typeof event.interaction_id === 'string' ? event.interaction_id : index}>
-            <details className="inspect-event">
-              <summary>
-                <span className="inspect-event-label">
-                  <strong>{typeof action === 'string' ? action : 'Action record'}</strong>
-                  {typeof occurred_at === 'string' && (
-                    <time className="inspect-time" dateTime={occurred_at}>{occurred_at}</time>
-                  )}
-                </span>
-                <ChevronDown size={15} aria-hidden="true" />
-              </summary>
-              <EvidenceFields evidence={fields} nodes={nodes} />
-            </details>
+          <li className="inspect-step" data-active={active} key={index}>
+            {onStepSelect ? (
+              <button className="inspect-step-action" type="button" aria-pressed={active} aria-controls="graph" onClick={() => onStepSelect(index)}>
+                {title}
+              </button>
+            ) : <div className="inspect-step-action">{title}</div>}
+            <div className="inspect-step-content">
+              <p>{step.description}</p>
+              <StepFacts step={step} nodes={nodes} />
+            </div>
           </li>
         )
       })}
@@ -141,38 +193,128 @@ function InteractionSequence({ events, nodes }: { events: EvidenceValue; nodes: 
   )
 }
 
-function FindingDetails({ finding, nodes }: { finding: Finding; nodes: NodesById }) {
-  const { interactions, ...fields } = finding.evidence
-  const Icon = ruleIcons[finding.rule_id] ?? ShieldAlert
-  const nodeCount = finding.node_ids.length
-  const edgeCount = finding.edge_ids.length
-  const hasFields = Object.keys(fields).length > 0
+function TraceRecords({ investigation, nodes, edges }: {
+  investigation: Investigation
+  nodes: NodesById
+  edges: ReadonlyMap<string, GraphEdge>
+}) {
+  const entities = investigation.affected_node_ids.flatMap((id) => {
+    const node = nodes.get(id)
+    return node ? [node] : []
+  })
+  const relationships = investigation.edge_ids.flatMap((id) => {
+    const edge = edges.get(id)
+    return edge ? [edge] : []
+  })
+
+  return (
+    <>
+      <details className="inspect-disclosure">
+        <summary>
+          Affected entities <span>{entities.length}</span>
+          <ChevronDown size={15} aria-hidden="true" />
+        </summary>
+        {entities.length ? (
+          <ul className="inspect-trace-records">
+            {entities.map((node) => {
+              const { label, Icon } = nodeKinds[node.kind]
+              return (
+                <li key={node.id}>
+                  <Icon size={15} aria-hidden="true" />
+                  <div>
+                    <strong>{node.label}</strong>
+                    <span>{label}</span>
+                    <code>{node.record_id}</code>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        ) : <p className="inspect-muted">No affected entities resolved.</p>}
+      </details>
+      <details className="inspect-disclosure">
+        <summary>
+          Path relationships <span>{relationships.length}</span>
+          <ChevronDown size={15} aria-hidden="true" />
+        </summary>
+        {relationships.length ? (
+          <ul className="inspect-trace-records">
+            {relationships.map((edge) => (
+              <li key={edge.id}>
+                <ArrowRight size={15} aria-hidden="true" />
+                <div>
+                  <strong>{relationshipLabels[edge.kind]}</strong>
+                  <span>{nodes.get(edge.source)?.label ?? edge.source} → {nodes.get(edge.target)?.label ?? edge.target}</span>
+                  <code>{edge.id}</code>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : <p className="inspect-muted">No graph relationships resolved.</p>}
+      </details>
+    </>
+  )
+}
+
+function FindingDetails({ finding, nodes, edges, activeStepIndex, onStepSelect }: {
+  finding: Finding
+  nodes: NodesById
+  edges: ReadonlyMap<string, GraphEdge>
+} & StepSelection) {
+  const { investigation, evidence, rule_id: rule } = finding
+  const Icon = ruleIcons[rule] ?? ShieldAlert
+  const fields = Object.fromEntries(
+    (contextFields[rule] ?? []).filter((key) => Object.hasOwn(evidence, key)).map((key) => [key, evidence[key]]),
+  )
 
   return (
     <>
       <div className="inspect-focus inspect-focus--finding">
         <div className="inspect-kind"><Icon size={15} aria-hidden="true" /> Security finding</div>
         <h3>{finding.category}</h3>
-        <p>{finding.explanation}</p>
-        <div className="inspect-path">
-          <Link2 size={16} aria-hidden="true" />
-          <div>
-            <strong>Graph evidence</strong>
-            <span>{nodeCount} {nodeCount === 1 ? 'node' : 'nodes'} · {edgeCount} {edgeCount === 1 ? 'relationship' : 'relationships'}</span>
-          </div>
-          <a href="#graph" aria-label="View highlighted evidence in graph"><ArrowUpRight size={16} aria-hidden="true" /></a>
-        </div>
+        <div className="inspect-cause"><CircleHelp size={15} aria-hidden="true" /> Root cause not established</div>
       </div>
-      <section className="inspect-section" aria-labelledby="evidence-title">
-        <h4 id="evidence-title">Evidence</h4>
-        {interactions !== undefined && (
-          <div className="inspect-sequence">
-            <h5>Interaction sequence</h5>
-            <InteractionSequence events={interactions} nodes={nodes} />
-          </div>
-        )}
-        {hasFields && <EvidenceFields evidence={fields} nodes={nodes} rule={finding.rule_id} />}
-        {interactions === undefined && !hasFields && <p className="inspect-muted">No evidence records.</p>}
+      <section className="inspect-section" aria-labelledby="rule-interpretation-title">
+        <h4 id="rule-interpretation-title">Rule interpretation</h4>
+        <p className="inspect-muted">{finding.explanation}</p>
+      </section>
+      <section className="inspect-section" aria-labelledby="documented-trace-title">
+        <h4 id="documented-trace-title"><Route size={15} aria-hidden="true" /> Documented trace</h4>
+        {investigation ? (
+          <>
+            <div className="inspect-trace-summary">
+              <span>{investigation.complete ? 'Evidence trace complete' : 'Partial evidence trace'}</span>
+              <a href="#investigation-tools" className="inspect-graph-link">Investigation controls <ArrowUpRight size={14} aria-hidden="true" /></a>
+            </div>
+            <div className="inspect-trace-anchors">
+              <TraceAnchor label="Earliest supported evidence" step={investigation.origin} nodes={nodes} />
+              <TraceAnchor label="Trigger" step={investigation.trigger} nodes={nodes} />
+            </div>
+          </>
+        ) : <p className="inspect-muted">A structured trace is unavailable from this source.</p>}
+      </section>
+      {Object.keys(fields).length > 0 && (
+        <section className="inspect-section" aria-labelledby="recorded-context-title">
+          <h4 id="recorded-context-title">Recorded context</h4>
+          <EvidenceFields evidence={fields} nodes={nodes} rule={rule} />
+        </section>
+      )}
+      {investigation && (
+        <section className="inspect-section" aria-labelledby="evidence-steps-title">
+          <h4 id="evidence-steps-title">
+            Evidence steps <span>{investigation.steps.length}</span>
+          </h4>
+          <EvidenceSteps steps={investigation.steps} nodes={nodes} activeStepIndex={activeStepIndex} onStepSelect={onStepSelect} />
+        </section>
+      )}
+      <section className="inspect-section inspect-records-section" aria-label="Evidence records">
+        {investigation && <TraceRecords investigation={investigation} nodes={nodes} edges={edges} />}
+        <details className="inspect-disclosure">
+          <summary>Supporting records <ChevronDown size={15} aria-hidden="true" /></summary>
+          {Object.keys(evidence).length ? (
+            <EvidenceFields evidence={evidence} nodes={nodes} rule={rule} />
+          ) : <p className="inspect-muted">No supporting records were supplied.</p>}
+        </details>
       </section>
     </>
   )
@@ -317,14 +459,15 @@ function NodeDetails({ data, node, nodes, onNodeSelect }: {
   )
 }
 
-export function Inspector({ data, node, finding, onNodeSelect }: {
+export function Inspector({ data, node, finding, onNodeSelect, activeStepIndex, onStepSelect }: {
   data: Dashboard
   node?: GraphNode
   finding?: Finding
   onNodeSelect: (node: GraphNode) => void
-}) {
-  const nodes = new Map(data.nodes.map((entry) => [entry.id, entry]))
-  const shortcuts = data.nodes.filter((entry) => entry.kind === 'agent').slice(0, 3)
+} & StepSelection) {
+  const nodes = useMemo(() => new Map(data.nodes.map((entry) => [entry.id, entry])), [data.nodes])
+  const edges = useMemo(() => new Map(data.edges.map((entry) => [entry.id, entry])), [data.edges])
+  const shortcuts = useMemo(() => data.nodes.filter((entry) => entry.kind === 'agent').slice(0, 3), [data.nodes])
 
   return (
     <section className="panel investigation-inspector" id="inspector" aria-labelledby="inspector-title">
@@ -335,35 +478,45 @@ export function Inspector({ data, node, finding, onNodeSelect }: {
         </div>
         {node && <a href="#graph" className="inspect-graph-link">View graph <ArrowUpRight size={14} aria-hidden="true" /></a>}
       </header>
-      {finding && <FindingDetails finding={finding} nodes={nodes} />}
-      {node && <NodeDetails data={data} node={node} nodes={nodes} onNodeSelect={onNodeSelect} />}
-      {!node && !finding && (
-        <>
-          <div className="inspect-empty">
-            <ArrowDownRight size={18} aria-hidden="true" />
-            <div>
-              <h3>Select a finding or node</h3>
-              <p>Review evidence for a finding or inspect a node’s records and relationships.</p>
+      <div className="inspect-body" key={finding?.id ?? node?.id} tabIndex={0} role="region" aria-label="Inspector details">
+        {finding && (
+          <FindingDetails
+            finding={finding}
+            nodes={nodes}
+            edges={edges}
+            activeStepIndex={activeStepIndex}
+            onStepSelect={onStepSelect}
+          />
+        )}
+        {node && <NodeDetails data={data} node={node} nodes={nodes} onNodeSelect={onNodeSelect} />}
+        {!node && !finding && (
+          <>
+            <div className="inspect-empty">
+              <ArrowDownRight size={18} aria-hidden="true" />
+              <div>
+                <h3>Select a finding or node</h3>
+                <p>Review evidence for a finding or inspect a node’s records and relationships.</p>
+              </div>
             </div>
-          </div>
-          {shortcuts.length > 0 && (
-            <section className="inspect-section" aria-labelledby="inspect-agents-title">
-              <h4 id="inspect-agents-title">Explore AI agents</h4>
-              <ul className="inspect-shortcuts">
-                {shortcuts.map((agent) => (
-                  <li key={agent.id}>
-                    <button type="button" onClick={() => onNodeSelect(agent)}>
-                      <Bot size={15} aria-hidden="true" />
-                      <span>{agent.label}</span>
-                      <ArrowRight size={15} aria-hidden="true" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-        </>
-      )}
+            {shortcuts.length > 0 && (
+              <section className="inspect-section" aria-labelledby="inspect-agents-title">
+                <h4 id="inspect-agents-title">Explore AI agents</h4>
+                <ul className="inspect-shortcuts">
+                  {shortcuts.map((agent) => (
+                    <li key={agent.id}>
+                      <button type="button" onClick={() => onNodeSelect(agent)}>
+                        <Bot size={15} aria-hidden="true" />
+                        <span>{agent.label}</span>
+                        <ArrowRight size={15} aria-hidden="true" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+          </>
+        )}
+      </div>
     </section>
   )
 }

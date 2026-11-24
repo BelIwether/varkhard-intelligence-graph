@@ -49,6 +49,27 @@ export interface GraphEdge {
 
 export type EvidenceValue = string | number | boolean | null | EvidenceValue[] | { [key: string]: EvidenceValue }
 
+export interface InvestigationStep {
+  title: string
+  description: string
+  node_ids: string[]
+  edge_ids: string[]
+  record_node_id: string | null
+  occurred_at: number | null
+  action: string | null
+  outcome: Interaction['outcome'] | null
+}
+
+export interface Investigation {
+  origin: InvestigationStep | null
+  trigger: InvestigationStep | null
+  steps: InvestigationStep[]
+  affected_node_ids: string[]
+  node_ids: string[]
+  edge_ids: string[]
+  complete: boolean
+}
+
 export interface Finding {
   id: string
   rule_id: RuleId
@@ -57,6 +78,7 @@ export interface Finding {
   evidence: Record<string, EvidenceValue>
   node_ids: string[]
   edge_ids: string[]
+  investigation?: Investigation
 }
 
 export interface Dashboard {
@@ -67,7 +89,7 @@ export interface Dashboard {
   nodes: GraphNode[]
   edges: GraphEdge[]
   findings: Finding[]
-  source: { filename: string; read_only: boolean }
+  source: { filename: string; read_only: boolean; synthetic_demo?: boolean }
 }
 
 export async function getDashboard(signal: AbortSignal): Promise<Dashboard> {

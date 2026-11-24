@@ -31,6 +31,10 @@ def create_app(
     if db_path is None:
         db_path = os.environ.get("VARKHARD_DB_PATH") or DEFAULT_DASHBOARD_DB
     path = Path(db_path).expanduser().absolute()
+    try:
+        synthetic_demo = path.resolve() == DEFAULT_DASHBOARD_DB.resolve()
+    except (OSError, RuntimeError):
+        synthetic_demo = False
     app = FastAPI(title="VARKHARD Security Dashboard", version="0.1.0")
 
     def read(operation: Callable[[GraphStore], _Result]) -> _Result:
@@ -50,7 +54,7 @@ def create_app(
     @app.get("/api/graph")
     def graph() -> DashboardGraph:
         """Read the graph and its findings from one read-only connection."""
-        return read(lambda store: read_graph(store, path.name))
+        return read(lambda store: read_graph(store, path.name, synthetic_demo=synthetic_demo))
 
     @app.get("/api/agents")
     def agents() -> list[Agent]:

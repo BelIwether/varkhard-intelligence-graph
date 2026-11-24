@@ -1,0 +1,121 @@
+.record-search {
+  position: relative;
+  flex: 1 1 250px;
+  min-width: min(230px, 100%);
+  max-width: 380px;
+}
+
+.record-search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.record-search-field,
+.record-search-form select {
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.record-search-field {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding-inline: 9px;
+}
+
+.record-search-field:focus-within {
+  border-color: var(--steel);
+}
+
+.record-search-field svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.record-search-field input {
+  min-width: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.record-search-field input::placeholder {
+  color: var(--muted);
+}
+
+.record-search-form select {
+  max-width: 118px;
+  padding-inline: 6px;
+  cursor: pointer;
+}
+
+.record-search-results {
+  position: absolute;
+  z-index: 5;
+  inset: calc(100% + 6px) 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 8px 22px #0008;
+}
+
+.record-search-status {
+  margin: 0;
+  padding: 9px 11px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.record-search-list {
+  display: grid;
+  gap: 3px;
+  max-height: min(19rem, 43svh);
+  overflow: auto;
+  padding: 0 5px 5px;
+  overscroll-behavior: contain;
+}
+
+.record-search-list button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 3px 7px;
+  width: 100%;
+  min-height: 43px;
+  padding: 7px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  text-align: start;
+}
+
+.record-search-list button:hover,
+.record-search-list button:focus-visible {
+  border-color: var(--border);
+  background: var(--surface-raised);
+  outline-offset: -1px;
+}
+
+.record-search-list strong, .record-search-list small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.record-search-list strong { font-size: 12px; font-weight: 620; }
+.record-search-list small { color: var(--muted); font-size: 10px; }
+.record-search-list svg { grid-area: 1 / 2 / 3; color: var(--muted); }

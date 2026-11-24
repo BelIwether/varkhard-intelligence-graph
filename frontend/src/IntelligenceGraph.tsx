@@ -1,30 +1,38 @@
 import {
   Background,
+  BaseEdge,
   Controls,
   Handle,
   MarkerType,
   Position,
   ReactFlow,
+  getBezierPath,
+  getSmoothStepPath,
   useNodesInitialized,
   useNodesState,
   useReactFlow,
   useStore,
   type Edge,
+  type EdgeProps,
   type FitViewOptions,
   type Node,
   type NodeProps,
   type NodeTypes,
 } from '@xyflow/react'
 import { Bot, Box, GitBranch, KeyRound } from 'lucide-react'
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FocusEvent } from 'react'
 import '@xyflow/react/dist/style.css'
 import type { GraphEdge, GraphNode, GraphNodeKind } from './api'
 import './graph.css'
 
-type GraphFocus = {
+export type GraphFocus = {
   nodeIds: string[]
   edgeIds: string[]
-  tone: 'finding' | 'entity'
+  tone: 'finding' | 'entity' | 'origin' | 'affected' | 'step'
+  originNodeId?: string
+  selectedNodeId?: string
+  stepNumber?: number
+  orderedEdgeIds?: string[]
 }
 
 type GraphProps = {
@@ -34,39 +42,66 @@ type GraphProps = {
   onNodeSelect: (node: GraphNode) => void
 }
 
-type Emphasis = 'finding' | 'entity' | 'muted'
-type RecordNode = Node<{ record: GraphNode; emphasis?: Emphasis }, 'record'>
+type Emphasis = GraphFocus['tone'] | 'muted'
+type RecordNode = Node<{
+  record: GraphNode
+  emphasis?: Emphasis
+  isOrigin?: boolean
+  isSelected?: boolean
+  stepNumber?: number
+}, 'record'>
 type LaneNode = Node<{ kind: GraphNodeKind }, 'lane'>
 type FlowNode = RecordNode | LaneNode
+type RelationshipEdge = Edge<{ title: string; label?: string; sameLane: boolean }, 'relationship'>
 
 const lanes = {
-  agent: { label: 'Agents', singular: 'AI agent', Icon: Bot, x: 0, compactX: 0, height: 44, gap: 12 },
-  permission: { label: 'Permissions', singular: 'Permission', Icon: KeyRound, x: 200, compactX: 119, height: 26, gap: 6 },
-  interaction: { label: 'Interactions', singular: 'Interaction', Icon: GitBranch, x: 372, compactX: 224, height: 28, gap: 8 },
-  resource: { label: 'Resources', singular: 'Resource', Icon: Box, x: 550, compactX: 331, height: 44, gap: 12 },
+  agent: { label: 'Agents', singular: 'AI agent', Icon: Bot, x: 0, compactX: 0, height: 46, gap: 13 },
+  permission: { label: 'Permissions', singular: 'Permission', Icon: KeyRound, x: 227, compactX: 123, height: 30, gap: 7 },
+  interaction: { label: 'Interactions', singular: 'Interaction', Icon: GitBranch, x: 414, compactX: 224, height: 33, gap: 10 },
+  resource: { label: 'Resources', singular: 'Resource', Icon: Box, x: 648, compactX: 346, height: 46, gap: 13 },
 }
 const laneKinds = Object.keys(lanes) as GraphNodeKind[]
 
 const edgeLabels: Record<GraphEdge['kind'], string> = {
   HAS_PERMISSION: 'Has permission',
-  ON_RESOURCE: 'Applies to resource',
-  PERFORMED: 'Performed interaction',
-  TARGETS: 'Targets resource',
-  HANDED_TO: 'Handed to agent',
-  TRIGGERS: 'Triggers interaction',
+  ON_RESOURCE: 'Applies to',
+  PERFORMED: 'Performed',
+  TARGETS: 'Targets',
+  HANDED_TO: 'Handed to',
+  TRIGGERS: 'Triggers',
 }
 
 const fitViewOptions: FitViewOptions = {
-  padding: { top: '20px', right: '16px', bottom: '58px', left: '16px' },
+  padding: { top: '28px', right: '15px', bottom: '60px', left: '15px' },
   maxZoom: 1.2,
 }
 
-const RecordCard = memo(function RecordCard({ data }: NodeProps<RecordNode>) {
-  const { record, emphasis } = data
+const RecordCard = memo(function RecordCard({ id, data }: NodeProps<RecordNode>) {
+  const { record, emphasis, isOrigin, isSelected, stepNumber } = data
+  const { fitView, getZoom } = useReactFlow()
   const { Icon, singular } = lanes[record.kind]
+  const marker = stepNumber === undefined ? (isOrigin ? 'Origin' : undefined) : `Step ${stepNumber}`
+  const classes = [
+    'graph-record',
+    `graph-record--${record.kind}`,
+    emphasis && `graph-record--${emphasis}`,
+    isOrigin && 'graph-record--origin',
+    isSelected && 'graph-record--selected',
+  ].filter(Boolean).join(' ')
+
+  function revealKeyboardFocus(event: FocusEvent<HTMLButtonElement>) {
+    const button = event.currentTarget
+    if (!button.matches(':focus-visible')) return
+
+    const frame = button.closest('.intelligence-graph')?.getBoundingClientRect()
+    const card = button.getBoundingClientRect()
+    if (frame && (card.left < frame.left || card.right > frame.right || card.top < frame.top || card.bottom > frame.bottom)) {
+      void fitView({ ...fitViewOptions, nodes: [{ id }], maxZoom: getZoom() })
+    }
+  }
 
   return (
-    <div className={`graph-record graph-record--${record.kind}${emphasis ? ` graph-record--${emphasis}` : ''}`}>
+    <div className={classes}>
       <Handle type="target" position={Position.Left} id="in" />
       <Handle type="source" position={Position.Right} id="out" />
       {record.kind === 'agent' && (
@@ -89,10 +124,18 @@ const RecordCard = memo(function RecordCard({ data }: NodeProps<RecordNode>) {
           <Handle type="source" position={Position.Left} id="handoff" style={{ top: '77%' }} />
         </>
       )}
-      <button type="button" title={record.label} aria-label={`${singular}: ${record.label}`}>
+      <button
+        type="button"
+        title={`${singular}: ${record.label}\n${record.record_id}`}
+        aria-label={`${singular}: ${record.label}`}
+        aria-pressed={isSelected ?? false}
+        aria-description={isOrigin ? 'Earliest supported evidence' : marker}
+        onFocus={revealKeyboardFocus}
+      >
         <span className="graph-record__icon"><Icon aria-hidden="true" /></span>
         <span className="graph-record__label">{record.label}</span>
       </button>
+      {marker && <span className="graph-record__marker" aria-hidden="true">{marker}</span>}
     </div>
   )
 })
@@ -102,6 +145,30 @@ function LaneHeading({ data }: NodeProps<LaneNode>) {
 }
 
 const nodeTypes = { record: RecordCard, lane: LaneHeading } satisfies NodeTypes
+
+const Relationship = memo(function Relationship({
+  id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, style, data,
+}: EdgeProps<RelationshipEdge>) {
+  const endpoints = { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition }
+  // Keep explicit event-to-event links in the gap beyond the interaction cards.
+  const [path, labelX, labelY] = data?.sameLane
+    ? getSmoothStepPath({ ...endpoints, borderRadius: 10, offset: 27 })
+    : getBezierPath({ ...endpoints, curvature: 0.28 })
+
+  return (
+    <g>
+      <title>{data?.title}</title>
+      <BaseEdge id={id} path={path} markerEnd={markerEnd} style={style} interactionWidth={12} />
+      {data?.label && (
+        <text className="graph-edge-label" x={labelX} y={labelY - 5} aria-hidden="true">
+          {data.label}
+        </text>
+      )}
+    </g>
+  )
+})
+
+const edgeTypes = { relationship: Relationship }
 
 function connectedGroups(nodes: GraphNode[], edges: GraphEdge[]) {
   const records = new Map(nodes.map((node) => [node.id, node]))
@@ -129,7 +196,7 @@ function connectedGroups(nodes: GraphNode[], edges: GraphEdge[]) {
     }
     groups.push(group)
   }
-  return groups.sort((left, right) => right.length - left.length)
+  return groups.sort((left, right) => right.length - left.length || left[0].id.localeCompare(right[0].id))
 }
 
 function orderInteractions(interactions: GraphNode[], triggers: Map<string, string[]>) {
@@ -226,15 +293,27 @@ function layoutGraph(nodes: GraphNode[], edges: GraphEdge[], compact: boolean): 
         })
       })
     }
-    startY += height + 28
+    startY += height + 39
   }
   return positioned
 }
 
-function flowEdges(edges: GraphEdge[], focus?: GraphFocus): Edge[] {
+const evidenceStroke: Record<Emphasis, string> = {
+  muted: '#292a2d',
+  entity: '#b3b6bd',
+  affected: '#a3a5a9',
+  finding: '#be747a',
+  origin: '#d18a90',
+  step: '#d18a90',
+}
+
+function flowEdges(nodes: GraphNode[], edges: GraphEdge[], focus?: GraphFocus): RelationshipEdge[] {
   const highlighted = new Set(focus?.edgeIds)
+  const order = new Map(focus?.orderedEdgeIds?.map((id, index) => [id, index + 1]))
+  const names = new Map(nodes.map(({ id, label }) => [id, label]))
   return edges.map((edge) => {
-    const emphasis = highlighted.has(edge.id) ? focus?.tone : focus && 'muted'
+    const active = highlighted.has(edge.id)
+    const emphasis = active ? focus?.tone : focus && 'muted'
     const access = edge.kind === 'HAS_PERMISSION' || edge.kind === 'ON_RESOURCE'
     const trigger = edge.kind === 'TRIGGERS'
     const handoff = edge.kind === 'HANDED_TO'
@@ -242,25 +321,34 @@ function flowEdges(edges: GraphEdge[], focus?: GraphFocus): Edge[] {
       : edge.kind === 'HAS_PERMISSION' ? 'permission' : edge.kind === 'PERFORMED' ? 'activity' : 'out'
     const targetHandle = trigger ? 'triggered' : handoff ? 'recipient'
       : edge.kind === 'ON_RESOURCE' ? 'permission' : edge.kind === 'TARGETS' ? 'activity' : 'in'
-    const colors = { muted: '#303a47', entity: '#a9bfda', finding: '#d4908e' }
-    const color = emphasis ? colors[emphasis] : access ? '#526477' : '#71859b'
+    const stroke = emphasis ? evidenceStroke[emphasis] : access ? '#505156' : '#73757a'
+    const relation = edgeLabels[edge.kind]
+    const index = order.get(edge.id)
+    // Keep progression readable next to the interaction cards. Supporting edges
+    // still expose their direction and relationship through the SVG tooltip.
+    const incomingStep = trigger && focus?.tone === 'step' && edge.target === focus.selectedNodeId
+    const label = active && index !== undefined ? `${index} · ${relation}`
+      : active && incomingStep ? relation : undefined
+    const title = `${names.get(edge.source) ?? edge.source} → ${relation} → ${names.get(edge.target) ?? edge.target}`
 
     return {
       id: edge.id,
+      type: 'relationship',
       source: edge.source,
       target: edge.target,
       sourceHandle,
       targetHandle,
-      ariaLabel: edgeLabels[edge.kind],
+      ariaLabel: title,
+      data: { title, label, sameLane: trigger },
       className: `graph-edge${emphasis ? ` graph-edge--${emphasis}` : ''}`,
       focusable: false,
-      zIndex: emphasis && emphasis !== 'muted' ? 2 : 0,
+      zIndex: active ? 2 : 0,
       style: {
-        stroke: color,
-        strokeWidth: emphasis && emphasis !== 'muted' ? 2.6 : 1.35,
-        strokeDasharray: trigger || handoff ? '5 4' : undefined,
+        stroke,
+        strokeWidth: active ? 2.3 : 1.25,
+        strokeDasharray: !active && (trigger || handoff) ? '4 4' : undefined,
       },
-      markerEnd: { type: MarkerType.ArrowClosed, color, width: 15, height: 15 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: stroke, width: 14, height: 14 },
     }
   })
 }
@@ -299,16 +387,25 @@ function GraphCanvas({ nodes, edges, focus, onNodeSelect, compact }: GraphProps 
     const highlighted = new Set(focus.nodeIds)
     return positioned.map((node): FlowNode => {
       if (node.type !== 'record') return node
-      return { ...node, data: { ...node.data, emphasis: highlighted.has(node.id) ? focus.tone : 'muted' } }
+      if (!highlighted.has(node.id)) return { ...node, data: { ...node.data, emphasis: 'muted' } }
+
+      const isSelected = focus.selectedNodeId === node.id
+      const isOrigin = focus.originNodeId === node.id
+      const emphasis = focus.tone === 'origin' ? 'entity' : focus.tone
+      return {
+        ...node,
+        data: { ...node.data, emphasis, isOrigin, isSelected, stepNumber: isSelected ? focus.stepNumber : undefined },
+      }
     })
   }, [positioned, focus])
-  const visibleEdges = useMemo(() => flowEdges(edges, focus), [edges, focus])
+  const visibleEdges = useMemo(() => flowEdges(nodes, edges, focus), [nodes, edges, focus])
 
   return (
-    <ReactFlow<FlowNode>
+    <ReactFlow<FlowNode, RelationshipEdge>
       nodes={visibleNodes}
       edges={visibleEdges}
       nodeTypes={nodeTypes}
+      edgeTypes={edgeTypes}
       onNodesChange={onNodesChange}
       onNodeClick={(_, node) => {
         if (node.type === 'record') onNodeSelect(node.data.record)
@@ -336,7 +433,7 @@ function GraphCanvas({ nodes, edges, focus, onNodeSelect, compact }: GraphProps 
       }}
       proOptions={{ hideAttribution: true }}
     >
-      <Background color="#364351" gap={22} size={1} />
+      <Background color="#303135" gap={24} size={1} />
       <GraphViewport focus={focus} />
     </ReactFlow>
   )

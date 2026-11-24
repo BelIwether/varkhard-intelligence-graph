@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+from .models import MAX_TIMESTAMP
+
 if TYPE_CHECKING:
     from .store import GraphStore
 
@@ -50,7 +52,11 @@ class Finding:
 def detect_findings(store: GraphStore) -> list[Finding]:
     """Return findings for the current graph in a stable, rule-first order."""
     permissions = sorted(store.query(_PERMISSIONS), key=lambda row: row["permission_id"])
-    interactions = sorted(store.query(_INTERACTIONS), key=lambda row: row["interaction_id"])
+    interactions = sorted(
+        (row for row in store.query(_INTERACTIONS)
+         if type(row["occurred_at"]) is int and 0 <= row["occurred_at"] <= MAX_TIMESTAMP),
+        key=lambda row: row["interaction_id"],
+    )
 
     policy: defaultdict[tuple[str, str, str], dict[str, list[str]]] = defaultdict(dict)
     for permission in permissions:
@@ -121,9 +127,11 @@ def _suspicious_chains(
     )
     findings = []
     for path in paths:
-        read = events[path["read_id"]]
-        handoff = events[path["handoff_id"]]
-        export = events[path["export_id"]]
+        read = events.get(path["read_id"])
+        handoff = events.get(path["handoff_id"])
+        export = events.get(path["export_id"])
+        if read is None or handoff is None or export is None:
+            continue
         sender_id = read["agent_id"]
         recipient_id = path["recipient_id"]
         if (

@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  ArrowDown, Bot, Box, ChevronRight, Database, GitFork, History, KeyRound,
-  Link2, LoaderCircle, RefreshCw, ShieldAlert, ShieldCheck, TriangleAlert, X,
+  ArrowDown, ArrowLeft, ArrowRight, Bot, Box, ChevronRight, Crosshair, Database, GitBranch, GitFork,
+  KeyRound, Link2, LoaderCircle, RefreshCw, RotateCcw, ScanLine,
+  ShieldAlert, ShieldCheck, TriangleAlert, Workflow,
 } from 'lucide-react'
 import { getDashboard } from './api'
-import type { Dashboard, Finding, GraphEdge, GraphNode } from './api'
+import type { Dashboard, Finding, GraphEdge, GraphNode, Investigation } from './api'
 import { IntelligenceGraph } from './IntelligenceGraph'
+import type { GraphFocus } from './IntelligenceGraph'
 import { Inspector } from './Inspector'
+import { RecordSearch } from './RecordSearch'
 
 const navigation = [
   { id: 'overview', label: 'Overview' },
@@ -18,16 +21,19 @@ const legend = [
   { kind: 'agent', label: 'AI agent', Icon: Bot },
   { kind: 'resource', label: 'Resource', Icon: Box },
   { kind: 'permission', label: 'Permission', Icon: KeyRound },
-  { kind: 'interaction', label: 'Action', Icon: History },
+  { kind: 'interaction', label: 'Interaction', Icon: GitBranch },
 ]
 
 const findingIcons = { unauthorized_access: ShieldAlert, excessive_permission: KeyRound, suspicious_chain: GitFork }
 
 type RequestState = { status: 'loading' } | { status: 'loaded'; data: Dashboard } | { status: 'error'; message: string }
-type Selection = { kind: 'node'; node: GraphNode } | { kind: 'finding'; finding: Finding }
+type FindingView = { mode: 'path' | 'origin' | 'affected' } | { mode: 'step'; index: number }
+type FindingSelection = { kind: 'finding'; finding: Finding; view: FindingView }
+type Selection = { kind: 'node'; node: GraphNode } | FindingSelection
 
 function sectionFromHash() {
   const hash = window.location.hash.slice(1)
+  if (hash === 'investigation-tools') return 'graph'
   return navigation.find(({ id }) => id === hash)?.id ?? (hash === 'inspector' ? 'findings' : 'overview')
 }
 
@@ -41,10 +47,61 @@ function supportingEdge(edge: GraphEdge, node: GraphNode, neighbors: Set<string>
   return false
 }
 
-function graphFocus(selection: Selection | null, edges: GraphEdge[]) {
-  if (selection?.kind === 'finding') {
-    return { nodeIds: selection.finding.node_ids, edgeIds: selection.finding.edge_ids, tone: 'finding' as const }
+function orderedTriggerEdges(investigation: Investigation, edges: GraphEdge[]) {
+  const sequence = new Map<string, { next: string; index: number }>()
+  investigation.steps.slice(0, -1).forEach(({ record_node_id: id }, index) => {
+    const next = investigation.steps[index + 1].record_node_id
+    if (id && next) sequence.set(id, { next, index })
+  })
+  const supported = new Set(investigation.edge_ids)
+  return edges.flatMap((edge) => {
+    const step = sequence.get(edge.source)
+    return step && edge.kind === 'TRIGGERS' && edge.target === step.next && supported.has(edge.id)
+      ? [{ id: edge.id, index: step.index }]
+      : []
+  }).sort((left, right) => left.index - right.index).map(({ id }) => id)
+}
+
+function investigationFocus({ finding, view }: FindingSelection, edges: GraphEdge[]): GraphFocus {
+  const trace = finding.investigation
+  if (!trace) return { nodeIds: finding.node_ids, edgeIds: finding.edge_ids, tone: 'finding' }
+
+  const originNodeId = trace.origin?.record_node_id ?? undefined
+  if (view.mode === 'origin' && originNodeId) {
+    return { nodeIds: [originNodeId], edgeIds: [], originNodeId, tone: 'origin' }
   }
+
+  if (view.mode === 'affected') {
+    const relevant = new Set(trace.affected_node_ids)
+    const evidenceEdges = new Set(trace.edge_ids)
+    const edgeIds = edges.filter(({ id, source, target }) => evidenceEdges.has(id) && relevant.has(source) && relevant.has(target))
+      .map(({ id }) => id)
+    return { nodeIds: trace.affected_node_ids, edgeIds, tone: 'affected' }
+  }
+
+  if (view.mode === 'step') {
+    const step = trace.steps[view.index]
+    if (step) return {
+      nodeIds: step.node_ids,
+      edgeIds: step.edge_ids,
+      selectedNodeId: step.record_node_id ?? undefined,
+      stepNumber: view.index + 1,
+      orderedEdgeIds: orderedTriggerEdges(trace, edges),
+      tone: 'step',
+    }
+  }
+
+  return {
+    nodeIds: trace.node_ids,
+    edgeIds: trace.edge_ids,
+    originNodeId,
+    orderedEdgeIds: orderedTriggerEdges(trace, edges),
+    tone: 'finding',
+  }
+}
+
+function graphFocus(selection: Selection | null, edges: GraphEdge[]): GraphFocus | undefined {
+  if (selection?.kind === 'finding') return investigationFocus(selection, edges)
   if (!selection) return undefined
 
   const { node } = selection
@@ -55,7 +112,8 @@ function graphFocus(selection: Selection | null, edges: GraphEdge[]) {
   return {
     nodeIds: [...new Set([node.id, ...relevant.flatMap(({ source, target }) => [source, target])])],
     edgeIds: [...new Set(relevant.map(({ id }) => id))],
-    tone: 'entity' as const,
+    selectedNodeId: node.id,
+    tone: 'entity',
   }
 }
 
@@ -71,13 +129,13 @@ function Overview({ data }: { data?: Dashboard }) {
       <div className="overview-intro">
         <div className="overview-heading">
           <h1 id="overview-title">Security Intelligence Overview</h1>
-          <p>Trace agent access, examine permissions, and follow the evidence behind each finding.</p>
+          <p>Investigate agent access, permissions, and the recorded events behind security findings.</p>
         </div>
         {data && (
           <div className="snapshot">
             <Database size={16} aria-hidden="true" />
             <div>
-              <strong>Relate snapshot</strong>
+              <strong>{data.source.synthetic_demo ? 'Synthetic Relate snapshot' : 'Relate snapshot'}</strong>
               <span title={data.source.filename}>{data.source.filename}</span>
             </div>
           </div>
@@ -93,10 +151,9 @@ function Overview({ data }: { data?: Dashboard }) {
               </div>
             ))}
           </dl>
-          <a className="finding-metric" href="#findings">
-            <span className="finding-metric-icon"><ShieldAlert size={21} aria-hidden="true" /></span>
+          <a className="finding-metric" href="#findings" data-has-findings={data.findings.length ? '' : undefined}>
+            <span className="finding-metric-label"><ShieldAlert size={17} aria-hidden="true" /> Security findings</span>
             <span className="metric-total">{data.findings.length.toLocaleString('en')}</span>
-            <span className="finding-metric-label">Security findings</span>
             <ArrowDown className="finding-metric-arrow" size={17} aria-hidden="true" />
           </a>
         </div>
@@ -131,11 +188,83 @@ function FindingCard({ finding, data, selected, onSelect }: {
   )
 }
 
+function InvestigationToolbar({ selection, onViewChange }: {
+  selection: FindingSelection
+  onViewChange: (view: FindingView) => void
+}) {
+  const { finding, view } = selection
+  const trace = finding.investigation
+  const steps = trace?.steps ?? []
+  const currentStep = view.mode === 'step' ? view.index : undefined
+  const label = view.mode === 'origin' ? 'Earliest supported record'
+    : view.mode === 'affected' ? 'Affected nodes'
+      : view.mode === 'step' ? `Step ${view.index + 1} of ${steps.length}`
+        : trace?.complete ? 'Evidence path' : 'Partial evidence graph'
+  const detail = view.mode === 'origin' ? trace?.origin?.title
+    : view.mode === 'step' ? steps[view.index]?.title : finding.category
+
+  return (
+    <div className="investigation-toolbar" id="investigation-tools" role="group" aria-label="Investigation controls">
+      <div className="investigation-actions">
+        <button type="button" aria-pressed={view.mode === 'origin'} disabled={!trace?.origin?.record_node_id}
+          onClick={() => onViewChange({ mode: 'origin' })}>
+          <Crosshair size={14} aria-hidden="true" /> Trace Origin
+        </button>
+        <button type="button" aria-pressed={view.mode === 'path'}
+          onClick={() => onViewChange({ mode: 'path' })}>
+          <Workflow size={14} aria-hidden="true" /> Highlight Full Path
+        </button>
+        <button type="button" aria-pressed={view.mode === 'affected'} disabled={!trace?.affected_node_ids.length}
+          onClick={() => onViewChange({ mode: 'affected' })}>
+          <ScanLine size={14} aria-hidden="true" /> Show Affected Nodes
+        </button>
+        <button type="button" aria-pressed={view.mode === 'step'} disabled={!steps.length}
+          onClick={() => onViewChange({ mode: 'step', index: 0 })}>
+          <ArrowRight size={14} aria-hidden="true" /> Step Through Evidence
+        </button>
+      </div>
+      <div className="graph-selection" data-tone="finding">
+        <p role="status"><span>{label}</span> {detail}</p>
+        {currentStep !== undefined && (
+          <div className="step-actions">
+            <button type="button" aria-label="Previous evidence step" disabled={currentStep === 0}
+              onClick={() => onViewChange({ mode: 'step', index: currentStep - 1 })}>
+              <ArrowLeft size={15} aria-hidden="true" />
+            </button>
+            <button type="button" aria-label="Next evidence step" disabled={currentStep >= steps.length - 1}
+              onClick={() => onViewChange({ mode: 'step', index: currentStep + 1 })}>
+              <ArrowRight size={15} aria-hidden="true" />
+            </button>
+          </div>
+        )}
+        <a href="#inspector">Inspect finding <ChevronRight size={14} aria-hidden="true" /></a>
+      </div>
+    </div>
+  )
+}
+
 function DashboardContent({ data }: { data: Dashboard }) {
   const [selection, setSelection] = useState<Selection | null>(null)
+  const [graphRevision, setGraphRevision] = useState(0)
   const focus = useMemo(() => graphFocus(selection, data.edges), [selection, data.edges])
-  const selectedAgent = selection?.kind === 'node' && selection.node.kind === 'agent' ? selection.node.id : ''
-  const onNodeSelect = (node: GraphNode) => setSelection({ kind: 'node', node })
+  const selectedFinding = selection?.kind === 'finding' ? selection : undefined
+  const selectedNode = selection?.kind === 'node' ? selection.node : undefined
+  const selectedAgent = selectedNode?.kind === 'agent' ? selectedNode.id : ''
+  const onNodeSelect = useCallback((node: GraphNode) => setSelection({ kind: 'node', node }), [])
+  const onFindingSelect = useCallback((finding: Finding) => setSelection({ kind: 'finding', finding, view: { mode: 'path' } }), [])
+
+  function changeView(view: FindingView) {
+    setSelection((current) => {
+      if (current?.kind !== 'finding') return current
+      if (view.mode === 'step' && !current.finding.investigation?.steps[view.index]) return current
+      return { ...current, view }
+    })
+  }
+
+  function resetGraph() {
+    setSelection(null)
+    setGraphRevision((current) => current + 1)
+  }
 
   return (
     <div className="analysis-workspace">
@@ -151,8 +280,8 @@ function DashboardContent({ data }: { data: Dashboard }) {
                 <FindingCard
                   data={data}
                   finding={finding}
-                  selected={selection?.kind === 'finding' && selection.finding.id === finding.id}
-                  onSelect={() => setSelection({ kind: 'finding', finding })}
+                  selected={selectedFinding?.finding.id === finding.id}
+                  onSelect={() => onFindingSelect(finding)}
                 />
               </li>
             ))}
@@ -168,12 +297,9 @@ function DashboardContent({ data }: { data: Dashboard }) {
               <p>{data.nodes.length.toLocaleString('en')} nodes <span aria-hidden="true">·</span> {data.edges.length.toLocaleString('en')} relationships</p>
             </div>
             <div className="graph-actions">
-              {selection && (
-                <button className="icon-button" type="button" onClick={() => setSelection(null)} aria-label="Clear highlight" title="Clear highlight">
-                  <X size={17} aria-hidden="true" />
-                </button>
-              )}
+              <RecordSearch key={graphRevision} data={data} onNodeSelect={onNodeSelect} onFindingSelect={onFindingSelect} />
               <select
+                className="agent-picker"
                 aria-label="Select an AI agent"
                 aria-controls="graph inspector"
                 value={selectedAgent}
@@ -187,17 +313,21 @@ function DashboardContent({ data }: { data: Dashboard }) {
                 <option value="">Select an AI agent</option>
                 {data.agents.map((agent) => <option key={agent.id} value={`agent:${agent.id}`}>{agent.name}</option>)}
               </select>
+              <button className="reset-button" type="button" onClick={resetGraph}>
+                <RotateCcw size={14} aria-hidden="true" /> Reset Graph
+              </button>
             </div>
           </header>
-          {selection && (
-            <div className="graph-selection" data-tone={selection.kind}>
-              <p role="status"><span>{selection.kind === 'finding' ? 'Evidence path' : 'Selected entity'}</span> {selection.kind === 'finding' ? selection.finding.category : selection.node.label}</p>
-              <a href="#inspector">Inspect selection <ChevronRight size={14} aria-hidden="true" /></a>
+          {selectedFinding && <InvestigationToolbar selection={selectedFinding} onViewChange={changeView} />}
+          {selectedNode && (
+            <div className="graph-selection entity-selection">
+              <p role="status"><span>Selected entity</span> {selectedNode.label}</p>
+              <a href="#inspector">Inspect entity <ChevronRight size={14} aria-hidden="true" /></a>
             </div>
           )}
           <div className="graph-viewport">
             {data.nodes.length ? (
-              <IntelligenceGraph nodes={data.nodes} edges={data.edges} focus={focus} onNodeSelect={onNodeSelect} />
+              <IntelligenceGraph key={graphRevision} nodes={data.nodes} edges={data.edges} focus={focus} onNodeSelect={onNodeSelect} />
             ) : <p className="graph-empty">The Relate file contains no graph records.</p>}
           </div>
           <ul className="legend" aria-label="Graph node types">
@@ -209,8 +339,10 @@ function DashboardContent({ data }: { data: Dashboard }) {
 
         <Inspector
           data={data}
-          node={selection?.kind === 'node' ? selection.node : undefined}
-          finding={selection?.kind === 'finding' ? selection.finding : undefined}
+          node={selectedNode}
+          finding={selectedFinding?.finding}
+          activeStepIndex={selectedFinding?.view.mode === 'step' ? selectedFinding.view.index : undefined}
+          onStepSelect={(index) => changeView({ mode: 'step', index })}
           onNodeSelect={onNodeSelect}
         />
       </div>
@@ -265,7 +397,7 @@ export default function App() {
       <header className="site-header">
         <div className="site-header-inner">
           <a className="brand" href="#overview" aria-label="VARKHARD overview">
-            <img className="brand-emblem" src="/varkhard-shield.svg" alt="" width="29" height="33" />
+            <img className="brand-emblem" src="/varkhard-shield.svg" alt="" width="24" height="28" />
             <span>VARKHARD</span>
           </a>
           <nav className="top-navigation" aria-label="Primary navigation">

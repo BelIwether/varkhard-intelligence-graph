@@ -37,7 +37,7 @@ async def test_dashboard_returns_relate_records_and_unmodified_core_evidence():
             assert (await client.get(f"/api/{endpoint}")).json() == graph[endpoint]
 
     assert _DEMO.read_bytes() == before
-    assert graph["source"] == {"filename": "synthetic-demo.rl", "read_only": True}
+    assert graph["source"] == {"filename": "synthetic-demo.rl", "read_only": True, "synthetic_demo": True}
     for key, records in {
         "agents": DEMO_AGENTS,
         "resources": DEMO_RESOURCES,
@@ -103,7 +103,7 @@ async def test_configured_file_is_read_on_each_request(tmp_path, monkeypatch):
 
     async with _client(create_app()) as client:
         first = (await client.get("/api/graph")).json()
-        assert first["source"]["filename"] == "custom.rl"
+        assert first["source"] == {"filename": "custom.rl", "read_only": True, "synthetic_demo": False}
         assert first["findings"] == []
         assert {node["id"] for node in first["nodes"]} == {"agent:shared-id", "resource:shared-id"}
         with GraphStore(path) as store:
