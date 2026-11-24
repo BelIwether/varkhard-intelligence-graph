@@ -77,7 +77,14 @@ function DashboardContent({ data }: { data: Dashboard }) {
 
   return (
     <>
-      <dl className="metrics" aria-label="Graph summary">
+      <section className="summary-strip" aria-label="Graph security summary">
+        <div className="summary-intro">
+          <span className="summary-kicker">SYSTEM / SNAPSHOT</span>
+          <strong>Graph intelligence</strong>
+          <p>Agent access and security relationships from the embedded Relate graph.</p>
+          <span className="summary-live"><span aria-hidden="true" /> {data.source.read_only ? 'Read-only analysis' : 'Connected graph'}</span>
+        </div>
+        <dl className="metrics" aria-label="Graph summary">
         {[
           { label: 'AI agents', count: data.agents.length, Icon: Bot },
           { label: 'Resources', count: data.resources.length, Icon: Box },
@@ -89,14 +96,16 @@ function DashboardContent({ data }: { data: Dashboard }) {
             <dd>{count.toLocaleString('en')}</dd>
           </div>
         ))}
-      </dl>
+        </dl>
+      </section>
 
       <div className="workspace">
         <section className="panel graph-panel" id="graph" aria-labelledby="graph-title">
           <header className="panel-heading graph-heading">
             <div>
+              <span className="panel-kicker">INTERACTION MAP / RELATIONSHIPS</span>
               <h2 id="graph-title"><Network size={19} aria-hidden="true" /> Intelligence graph</h2>
-              <p>Explore relationships between agents, resources, and records.</p>
+              <p>Explore relationships between agents, resources, permissions and actions.</p>
             </div>
             <select
               aria-label="Select an AI agent"
@@ -137,7 +146,7 @@ function DashboardContent({ data }: { data: Dashboard }) {
         <aside className="side-panels" aria-label="Findings and details">
           <section className="panel findings-panel" id="findings" aria-labelledby="findings-title">
             <header className="panel-heading findings-heading">
-              <h2 id="findings-title"><ShieldAlert size={19} aria-hidden="true" /> Security findings</h2>
+              <h2 id="findings-title"><ShieldAlert size={19} aria-hidden="true" /> Security findings <span className="panel-counter">{data.findings.length}</span></h2>
             </header>
             {data.findings.length ? (
               <ul className="findings-list">
@@ -196,8 +205,11 @@ export default function App() {
       <header className="site-header">
         <div className="site-header-inner">
           <a className="brand" href="#main" aria-label="VARKHARD overview">
-            <span className="brand-name">VARKHARD</span>
-            <span className="brand-subtitle">SECURITY INTELLIGENCE</span>
+            <img className="brand-emblem" src="/varkhard-shield.svg" alt="" width="33" height="38" />
+            <span className="brand-wordmark">
+              <span className="brand-name">VARKHARD</span>
+              <span className="brand-subtitle">SECURITY INTELLIGENCE</span>
+            </span>
           </a>
           <nav className="top-navigation" aria-label="Primary navigation">
             <a href="#main">Overview</a>
