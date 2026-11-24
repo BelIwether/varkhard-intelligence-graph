@@ -418,7 +418,7 @@ ul { padding: 0; list-style: none; }
 .legend svg { color: var(--steel); }
 
 /* Expand the existing workspace so the graph and Inspector keep their state. */
-:is(.overview, .findings-panel, .investigation-inspector)[hidden] { display: none; }
+:is(.overview, .findings-panel, .investigation-inspector, .analysis-workspace)[hidden] { display: none; }
 
 .dashboard-shell[data-workspace-expanded] {
   display: grid;
@@ -521,6 +521,7 @@ ul { padding: 0; list-style: none; }
   :root { --gutter: 11px; }
   .brand { gap: 6px; font-size: 12px; letter-spacing: .13em; }
   .brand-emblem { width: 20px; height: 23px; }
+  .top-navigation { gap: clamp(8px, 3vw, 17px); }
   .header-actions { gap: 6px; }
   .source-status, .source-mode { gap: 4px; font-size: 10px; }
   .source-dot { width: 5px; height: 5px; }

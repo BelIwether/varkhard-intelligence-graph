@@ -162,7 +162,7 @@ def wait_for_refit(page: Page, previous_zoom: float) -> None:
 def check_header(page: Page) -> None:
     header = page.get_by_role("banner")
     navigation = header.get_by_role("navigation", name="Primary navigation")
-    expect(navigation.get_by_role("link")).to_have_text(["Overview", "Intelligence Graph", "Findings"])
+    expect(navigation.get_by_role("link")).to_have_text(["Overview", "Intelligence Graph", "Findings", "Knowledge"])
     expect(header.get_by_text("Relate", exact=True)).to_be_visible()
     expect(exact_button(header, "Refresh")).to_be_visible()
     for name in ("Overview", "Intelligence Graph", "Findings"):
