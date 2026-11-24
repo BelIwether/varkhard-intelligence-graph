@@ -3,10 +3,11 @@ from dataclasses import asdict
 from pathlib import Path
 
 import pytest
+import relate
 from httpx import ASGITransport, AsyncClient
 
 from varkhard.api import app, create_app
-from varkhard.demo import DEMO_AGENTS, DEMO_INTERACTIONS, DEMO_PERMISSIONS, DEMO_RESOURCES
+from varkhard.demo import DEMO_AGENTS, DEMO_INTERACTIONS, DEMO_PERMISSIONS, DEMO_RESOURCES, seed_demo
 from varkhard.detection import detect_findings
 from varkhard.models import Agent, Resource
 from varkhard.store import GraphStore
@@ -38,6 +39,7 @@ async def test_dashboard_returns_relate_records_and_unmodified_core_evidence():
 
     assert _DEMO.read_bytes() == before
     assert graph["source"] == {"filename": "synthetic-demo.rl", "read_only": True, "synthetic_demo": True}
+    assert graph["evidence_quality"] == {"status": "complete", "invalid_records": 0, "invalid_relationships": 0}
     for key, records in {
         "agents": DEMO_AGENTS,
         "resources": DEMO_RESOURCES,
@@ -121,6 +123,7 @@ async def test_locked_file_returns_retryable_error_and_recovers(tmp_path):
         with GraphStore(path):
             response = await client.get("/api/graph")
             assert response.status_code == 503
+            assert response.headers["cache-control"] == "no-store"
             assert response.json() == {
                 "detail": "The Relate file is locked. Close the writer and try again.",
             }
@@ -134,10 +137,80 @@ async def test_missing_file_returns_safe_error_without_creating_it(tmp_path):
         response = await client.get("/api/findings")
 
     assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"
     assert response.json() == {
         "detail": "The Relate graph is unavailable. Check the configured Single File.",
     }
     assert not path.exists()
+
+
+@pytest.mark.parametrize("file_kind", ["wrong_extension", "non_relate", "unrelated_schema", "uninitialized"])
+async def test_unsupported_snapshot_returns_a_safe_non_cacheable_error(tmp_path, file_kind):
+    path = tmp_path / ("sample.txt" if file_kind == "wrong_extension" else "sample.rl")
+    if file_kind in ("wrong_extension", "non_relate"):
+        path.write_text("A plain text fixture", encoding="utf-8")
+    else:
+        with relate.connect(str(path)) as connection:
+            if file_kind == "unrelated_schema":
+                connection.execute("CREATE (:Example {id: 'unrelated'})")
+
+    original = path.read_bytes()
+    async with _client(create_app(path)) as client:
+        for endpoint in ("graph", "findings", "agents", "resources"):
+            response = await client.get(f"/api/{endpoint}")
+            assert response.status_code == 503
+            assert response.headers["cache-control"] == "no-store"
+            assert response.json() == {"detail": "The configured file is not a supported VARKHARD Relate snapshot."}
+    assert path.read_bytes() == original
+
+
+async def test_initialized_empty_snapshot_is_supported(tmp_path):
+    path = tmp_path / "empty.rl"
+    with GraphStore(path):
+        pass
+
+    async with _client(create_app(path)) as client:
+        response = await client.get("/api/graph")
+
+    assert response.status_code == 200
+    assert response.json()["nodes"] == []
+    assert response.json()["findings"] == []
+    assert response.json()["evidence_quality"]["status"] == "complete"
+
+
+async def test_data_endpoints_and_api_errors_forbid_caching():
+    async with _client() as client:
+        for endpoint in ("graph", "findings", "agents", "resources"):
+            response = await client.get(f"/api/{endpoint}")
+            assert response.status_code == 200
+            assert response.headers["cache-control"] == "no-store"
+
+        unknown = await client.get("/api/unknown")
+        assert unknown.status_code == 404
+        assert unknown.headers["cache-control"] == "no-store"
+
+
+async def test_incomplete_snapshot_reports_quality_and_only_supported_findings(tmp_path):
+    path = tmp_path / "partial.rl"
+    with GraphStore(path) as store:
+        seed_demo(store)
+        store.query("""
+            MATCH (:Interaction {id: 'interaction-ledger-handoff'})-[link:TRIGGERS]->
+                  (:Interaction {id: 'interaction-outbox-export'})
+            DELETE link
+        """)
+
+    async with _client(create_app(path)) as client:
+        response = await client.get("/api/graph")
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+        graph = response.json()
+        assert graph["evidence_quality"]["status"] == "incomplete"
+        assert graph["evidence_quality"]["invalid_relationships"] >= 1
+        assert {finding["rule_id"] for finding in graph["findings"]} == {"unauthorized_access", "excessive_permission"}
+        assert (await client.get("/api/findings")).json() == graph["findings"]
+        export = next(event for event in graph["interactions"] if event["id"] == "interaction-outbox-export")
+        assert export["outcome"] == "success"
 
 
 async def test_parallel_requests_use_independent_read_only_connections():

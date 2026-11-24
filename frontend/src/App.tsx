@@ -258,6 +258,7 @@ function DashboardContent({ data, expanded, onExpandedChange, expandButton }: {
   const selectedNode = selection?.kind === 'node' ? selection.node : undefined
   const selectedAgent = selectedNode?.kind === 'agent' ? selectedNode.id : ''
   const inspectorHidden = expanded && inspectorCollapsed === true
+  const evidenceIncomplete = data.evidence_quality?.status === 'incomplete'
   const onNodeSelect = useCallback((node: GraphNode) => setSelection({ kind: 'node', node }), [])
   const onFindingSelect = useCallback((finding: Finding) => setSelection({ kind: 'finding', finding, view: { mode: 'path' } }), [])
 
@@ -287,10 +288,19 @@ function DashboardContent({ data, expanded, onExpandedChange, expandButton }: {
 
   return (
     <div className="analysis-workspace">
+      {evidenceIncomplete && !expanded && (
+        <aside className="evidence-notice" role="alert" aria-labelledby="evidence-notice-title">
+          <TriangleAlert size={16} aria-hidden="true" />
+          <div>
+            <strong id="evidence-notice-title">Incomplete evidence</strong>
+            <p>Some evidence records or links could not be validated. Available findings may be limited.</p>
+          </div>
+        </aside>
+      )}
       <section className="findings-panel panel" id="findings" aria-labelledby="findings-title" hidden={expanded}>
         <header className="findings-heading">
           <h2 id="findings-title">Findings <span className="panel-counter">{data.findings.length}</span></h2>
-          <p>Select a finding to trace its evidence.</p>
+          {(!evidenceIncomplete || data.findings.length > 0) && <p>Select a finding to trace its evidence.</p>}
         </header>
         {data.findings.length ? (
           <ul className="findings-list">
@@ -305,7 +315,12 @@ function DashboardContent({ data, expanded, onExpandedChange, expandButton }: {
               </li>
             ))}
           </ul>
-        ) : <p className="empty-message"><ShieldCheck size={18} aria-hidden="true" /> The rules returned no findings.</p>}
+        ) : (
+          <p className="empty-message">
+            {evidenceIncomplete ? <TriangleAlert size={18} aria-hidden="true" /> : <ShieldCheck size={18} aria-hidden="true" />}
+            {evidenceIncomplete ? 'No findings were reported for this incomplete snapshot.' : 'The rules returned no findings.'}
+          </p>
+        )}
       </section>
 
       <div className="analysis-layout" id="investigation-workspace" role="region" aria-label="Investigation workspace"
@@ -372,7 +387,11 @@ function DashboardContent({ data, expanded, onExpandedChange, expandButton }: {
                 expanded={expanded}
                 inspectorHidden={inspectorHidden}
               />
-            ) : <p className="graph-empty">The Relate file contains no graph records.</p>}
+            ) : (
+              <p className="graph-empty">
+                {evidenceIncomplete ? 'No verified graph records to display.' : 'The Relate file contains no graph records.'}
+              </p>
+            )}
           </div>
           <ul className="legend" aria-label="Graph node types">
             {legend.map(({ kind, label, Icon }) => (

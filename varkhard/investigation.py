@@ -60,6 +60,8 @@ class InvestigationBuilder:
         edges: list[GraphEdge],
         permissions: list[Permission],
         interactions: list[Interaction],
+        *,
+        incomplete_interaction_ids: frozenset[str] = frozenset(),
     ) -> None:
         self.nodes = {node.id: node for node in nodes}
         self.node_ids = {(node.kind, node.record_id): node.id for node in nodes}
@@ -74,6 +76,7 @@ class InvestigationBuilder:
                 self.parents[edge.target].add(edge.source)
         self.permissions = _unambiguous_records(permissions)
         self.interactions = _unambiguous_records(interactions)
+        self.incomplete_interaction_ids = incomplete_interaction_ids
 
     def build(self, finding: Finding) -> Investigation:
         if finding.rule_id == "unauthorized_access":
@@ -192,7 +195,7 @@ class InvestigationBuilder:
             title, description, node, related_nodes, [parent_edge, *relationships],
             action=event.action, occurred_at=event.occurred_at, outcome=event.outcome,
         )
-        return step, all(edge is not None for edge in relationships)
+        return step, event.id not in self.incomplete_interaction_ids and all(edge is not None for edge in relationships)
 
     def _permission_step(
         self,

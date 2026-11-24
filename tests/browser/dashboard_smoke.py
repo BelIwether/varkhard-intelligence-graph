@@ -6,7 +6,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
-from playwright.sync_api import Browser, ConsoleMessage, Locator, Page, Response, Route, expect, sync_playwright
+from playwright.sync_api import APIResponse, Browser, ConsoleMessage, Locator, Page, Response, Route, expect, sync_playwright
 
 
 GRAPH_NAME = "Interactive intelligence graph"
@@ -19,6 +19,11 @@ DEMO_FINDINGS = {
 
 def graph_response(response: Response) -> bool:
     return response.url.endswith("/api/graph") and response.ok
+
+
+def check_no_store(response: APIResponse | Response) -> None:
+    directives = response.headers.get("cache-control", "").lower().split(",")
+    assert "no-store" in {directive.strip() for directive in directives}, response.url
 
 
 def exact_button(scope: Page | Locator, name: str) -> Locator:
@@ -625,9 +630,20 @@ def check_desktop(browser: Browser, url: str, screenshots: Path | None) -> dict:
     with page.expect_response(graph_response) as response:
         document = page.goto(f"{url}/")
     assert document and document.ok
+    check_no_store(response.value)
+    for route in ("agents", "resources", "findings"):
+        api_response = page.request.get(f"{url}/api/{route}")
+        assert api_response.ok, (api_response.url, api_response.status)
+        check_no_store(api_response)
     data = response.value.json()
     assert data["source"]["filename"] == "synthetic-demo.rl"
     assert data["source"]["read_only"] is True
+    assert data["evidence_quality"] == {
+        "status": "complete",
+        "invalid_records": 0,
+        "invalid_relationships": 0,
+    }
+    expect(page.get_by_role("alert", name="Incomplete evidence")).to_have_count(0)
     findings = {finding["rule_id"]: finding for finding in data["findings"]}
     assert set(findings) == DEMO_FINDINGS
 
@@ -655,6 +671,7 @@ def check_desktop(browser: Browser, url: str, screenshots: Path | None) -> dict:
     check_graph_movement(page, graph)
     with page.expect_response(graph_response) as refreshed:
         exact_button(page.get_by_role("banner"), "Refresh").click()
+    check_no_store(refreshed.value)
     assert refreshed.value.json()["findings"] == data["findings"]
     expect(graph).to_be_visible()
     assert not errors, errors
@@ -782,6 +799,37 @@ def check_partial_trace(browser: Browser, url: str, data: dict) -> None:
     print("Verified partial trace display and unavailable history controls.")
 
 
+def check_incomplete_evidence(browser: Browser, url: str, data: dict) -> None:
+    incomplete_data = {
+        **data,
+        "evidence_quality": {"status": "incomplete", "invalid_records": 1, "invalid_relationships": 1},
+    }
+    page = browser.new_page(reduced_motion="reduce")
+    errors = watch_errors(page)
+    page.route("**/api/graph", lambda route: route.fulfill(json=incomplete_data))
+    page.goto(f"{url}/")
+    notice = page.get_by_role("alert", name="Incomplete evidence")
+    expect(notice).to_be_visible()
+    expect(notice).to_contain_text("Some evidence records or links could not be validated.")
+    expect(notice).to_contain_text("Available findings may be limited.")
+    finding = next(item for item in data["findings"] if item["rule_id"] == "suspicious_chain")
+    select_finding(page, finding)
+    graph = page.get_by_role("region", name=GRAPH_NAME)
+    check_graph_geometry(graph, finding["investigation"]["node_ids"], [1, 2], "verified graph with incomplete evidence")
+    assert graph_ids(graph, ".react-flow__edge.graph-edge--finding") == set(finding["investigation"]["edge_ids"])
+
+    for records in ("agents", "resources", "permissions", "interactions", "nodes", "edges", "findings"):
+        incomplete_data[records] = []
+    page.reload()
+    expect(notice).to_be_visible()
+    expect(page.get_by_text("No findings were reported for this incomplete snapshot.", exact=True)).to_be_visible()
+    expect(page.get_by_text("No verified graph records to display.", exact=True)).to_be_visible()
+    expect(graph).to_have_count(0)
+    assert not errors, errors
+    page.close()
+    print("Verified incomplete evidence warning with usable findings and with no verified records.")
+
+
 def check_error_recovery(browser: Browser, url: str) -> None:
     page = browser.new_page()
     pending: list[Route] = []
@@ -820,6 +868,7 @@ def main() -> None:
         for width, height in ((320, 568), (667, 375)):
             check_short_viewport(browser, url, width, height, chain, args.screenshots)
         check_partial_trace(browser, url, data)
+        check_incomplete_evidence(browser, url, data)
         check_error_recovery(browser, url)
         browser.close()
     print("Dashboard browser regression checks passed.")

@@ -3,6 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from varkhard.demo import seed_demo
 from varkhard.store import GraphStore
 
 
@@ -56,3 +57,25 @@ def test_cli_seeds_then_reads_graph_in_separate_process(tmp_path):
         assert bundled.query(nodes) == generated.query(nodes)
         assert bundled.query(edges) == generated.query(edges)
     assert snapshot.read_bytes() == snapshot_before
+
+
+def test_cli_reports_incomplete_evidence_separately_from_findings_json(tmp_path):
+    path = tmp_path / "partial.rl"
+    with GraphStore(path) as store:
+        seed_demo(store)
+        store.query("""
+            MATCH (event:Interaction {id: 'interaction-catalog-write-denied'})
+            SET event.outcome = 'unknown'
+        """)
+
+    analysis = subprocess.run(
+        [sys.executable, "-m", "varkhard", "--db", str(path), "analyze"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert "incomplete evidence" in analysis.stderr.lower()
+    assert {finding["rule_id"] for finding in json.loads(analysis.stdout)} == {"excessive_permission", "suspicious_chain"}

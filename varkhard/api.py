@@ -2,18 +2,18 @@
 
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TypeVar
 
 import relate
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .dashboard import DashboardFinding, DashboardGraph, read_agents, read_graph, read_resources
 from .models import Agent, Resource
-from .store import GraphStore, GraphStoreError
+from .store import GraphStore, GraphStoreError, UnsupportedSnapshotError
 
 _REPOSITORY = Path(__file__).resolve().parent.parent
 DEFAULT_DASHBOARD_DB = _REPOSITORY / "examples" / "synthetic-demo.rl"
@@ -37,6 +37,13 @@ def create_app(
         synthetic_demo = False
     app = FastAPI(title="VARKHARD Security Dashboard", version="0.1.0")
 
+    @app.middleware("http")
+    async def prevent_api_caching(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        response = await call_next(request)
+        if request.url.path == "/api" or request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     def read(operation: Callable[[GraphStore], _Result]) -> _Result:
         try:
             # Sync routes run in a worker. Keep connection open, use and close
@@ -45,7 +52,9 @@ def create_app(
                 return operation(store)
         except (GraphStoreError, relate.Error, OSError, ValueError) as error:
             _LOG.warning("Could not read dashboard graph: %s", error)
-            if isinstance(error, GraphStoreError) and " is locked." in str(error):
+            if isinstance(error, UnsupportedSnapshotError):
+                detail = "The configured file is not a supported VARKHARD Relate snapshot."
+            elif isinstance(error, GraphStoreError) and " is locked." in str(error):
                 detail = "The Relate file is locked. Close the writer and try again."
             else:
                 detail = "The Relate graph is unavailable. Check the configured Single File."

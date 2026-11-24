@@ -187,6 +187,10 @@ def test_suspicious_trace_never_reconstructs_a_removed_relationship(tmp_path, ki
     assert removed.id in finding.investigation.edge_ids
     assert removed.id not in {edge.id for edge in graph.edges}
     assert graph.interactions == original.interactions
+    assert original.evidence_quality.status == "complete"
+    assert original.evidence_quality.invalid_records == original.evidence_quality.invalid_relationships == 0
+    assert graph.evidence_quality.status == "incomplete"
+    assert graph.evidence_quality.invalid_relationships >= 1
     assert all(finding.rule_id != "suspicious_chain" for finding in graph.findings)
 
     builder = InvestigationBuilder(graph.nodes, graph.edges, graph.permissions, graph.interactions)
@@ -210,6 +214,8 @@ def test_malformed_chain_records_dont_block_unrelated_findings(tmp_path, damage)
         graph = read_graph(store, path.name)
 
     assert [finding.rule_id for finding in graph.findings] == ["unauthorized_access", "excessive_permission"]
+    assert graph.evidence_quality.status == "incomplete"
+    assert graph.evidence_quality.invalid_records >= 1
     node_ids = {node.id for node in graph.nodes}
     assert "interaction:interaction-ledger-handoff" not in node_ids
     assert all({edge.source, edge.target} <= node_ids for edge in graph.edges)

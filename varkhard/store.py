@@ -67,6 +67,10 @@ class GraphStoreError(RuntimeError):
     """A graph operation failed or would violate the store's contract."""
 
 
+class UnsupportedSnapshotError(GraphStoreError):
+    """The input is not a supported VARKHARD Relate Single File."""
+
+
 class GraphStore:
     """One embedded Relate connection, owned by the thread that opens it."""
 
@@ -75,7 +79,7 @@ class GraphStore:
         self._read_only = read_only
         self._path = Path(path).expanduser().resolve()
         if self._path.suffix != ".rl":
-            raise GraphStoreError("A Relate Single File path must end in .rl.")
+            raise UnsupportedSnapshotError("A Relate Single File path must end in .rl.")
         if not read_only:
             self._path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -84,10 +88,13 @@ class GraphStore:
                 str(self._path), read_only=read_only
             )
         except relate.OperationalError as exc:
-            if "storage locked" in str(exc).lower():
+            detail = str(exc).lower()
+            if "storage locked" in detail:
                 raise GraphStoreError(
                     f"Relate file {self._path} is locked. Close the conflicting connection and retry."
                 ) from exc
+            if "not a relate .rl bundle" in detail:
+                raise UnsupportedSnapshotError("The file is not a Relate Single File.") from exc
             raise
 
         if not read_only:

@@ -90,6 +90,7 @@ export interface Dashboard {
   edges: GraphEdge[]
   findings: Finding[]
   source: { filename: string; read_only: boolean; synthetic_demo?: boolean }
+  evidence_quality?: { status: 'complete' | 'incomplete'; invalid_records: number; invalid_relationships: number }
 }
 
 export async function getDashboard(signal: AbortSignal): Promise<Dashboard> {

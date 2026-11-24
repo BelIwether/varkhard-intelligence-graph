@@ -250,6 +250,22 @@ ul { padding: 0; list-style: none; }
 .panel { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
 .analysis-workspace { display: grid; gap: 11px; min-width: 0; }
 
+.evidence-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 11px;
+  border: 1px solid var(--risk-border);
+  border-radius: var(--radius);
+  background: var(--risk-surface);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.evidence-notice > svg { flex: none; color: var(--risk); }
+.evidence-notice p { color: var(--muted); }
+
 .findings-panel {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
