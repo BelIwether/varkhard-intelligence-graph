@@ -2,45 +2,71 @@
   width: 100%;
   height: 100%;
   overflow: hidden;
+  --graph-canvas: #11161e;
+  --graph-card-width-agent: 158px;
+  --graph-card-width-permission: 119px;
+  --graph-card-width-interaction: 112px;
+  --graph-card-width-resource: 158px;
+}
+
+.intelligence-graph--compact {
+  --graph-card-width-agent: 106px;
+  --graph-card-width-permission: 91px;
+  --graph-card-width-interaction: 89px;
+  --graph-card-width-resource: 106px;
 }
 
 .intelligence-graph .react-flow {
-  --xy-background-color: #111217;
-  --xy-controls-button-background-color: #1d1f26;
-  --xy-controls-button-background-color-hover: #282b34;
-  --xy-controls-button-color: #dde0e8;
-  --xy-controls-button-color-hover: #fff;
-  --xy-controls-button-border-color: #363943;
-  --xy-controls-box-shadow: none;
+  --xy-background-color: transparent;
+  --xy-controls-button-background-color: var(--surface, #191e26);
+  --xy-controls-button-background-color-hover: var(--surface-raised, #202731);
+  --xy-controls-button-color: var(--muted, #a1adbd);
+  --xy-controls-button-color-hover: var(--text, #edf1f5);
+  --xy-controls-button-border-color: var(--border, #2b3441);
+  --xy-controls-box-shadow: 0 5px 14px #0f11164d;
+  background: radial-gradient(ellipse at 49% 35%, #1a222c, var(--graph-canvas) 81%);
+}
+
+.intelligence-graph .react-flow__background {
+  opacity: 0.76;
 }
 
 .intelligence-graph .react-flow__controls {
-  bottom: 12px;
-  right: 12px;
-  margin: 0;
-  overflow: hidden;
-  border: 1px solid #373943;
+  align-items: center;
+  margin: 0 14px 14px;
+  border: 1px solid var(--border, #2b3441);
   border-radius: 8px;
+  background: var(--surface, #191e26);
 }
 
 .intelligence-graph .react-flow__controls-button {
-  width: 34px;
-  height: 34px;
+  width: 37px;
+  height: 36px;
   padding: 0;
 }
 
-.intelligence-graph .react-flow__controls-button:last-child {
-  border-bottom: 0;
+.intelligence-graph .react-flow__controls-button:first-child {
+  border-radius: 7px 0 0 7px;
 }
 
 .intelligence-graph .react-flow__controls-button:focus-visible {
-  outline: 2px solid #f4f4fa;
+  outline: 2px solid var(--steel, #a9bfda);
   outline-offset: -3px;
 }
 
+.graph-zoom {
+  min-width: 50px;
+  padding-inline: 8px;
+  color: var(--muted, #a1adbd);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
 .intelligence-graph .react-flow__handle {
-  width: 4px;
-  height: 4px;
+  width: 3px;
+  height: 3px;
   min-width: 0;
   min-height: 0;
   border: 0;
@@ -48,36 +74,105 @@
   pointer-events: none;
 }
 
-.graph-record {
-  width: 166px;
-  height: 46px;
+.graph-lane {
+  display: block;
+  padding-block: 0 7px;
+  border-bottom: 1px solid #364351;
+  color: #aebaca;
+  font: 650 11px/1.1 var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.065em;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
-.graph-record--permission,
+.graph-lane--agent,
+.graph-record--agent {
+  width: var(--graph-card-width-agent);
+}
+
+.graph-lane--permission,
+.graph-record--permission {
+  width: var(--graph-card-width-permission);
+}
+
+.graph-lane--interaction,
 .graph-record--interaction {
-  width: 143px;
-  height: 30px;
+  width: var(--graph-card-width-interaction);
+}
+
+.graph-lane--resource,
+.graph-record--resource {
+  width: var(--graph-card-width-resource);
+}
+
+.graph-record {
+  height: 44px;
+  --graph-node-accent: #a9bfda;
+  --graph-node-surface: #222d3b;
+  --graph-node-border: #43546b;
+}
+
+.graph-record--permission {
+  height: 26px;
+  --graph-node-accent: #b9a68b;
+  --graph-node-surface: #282a2d;
+  --graph-node-border: #45454a;
+}
+
+.graph-record--interaction {
+  height: 28px;
+  --graph-node-accent: #a4a9c7;
+  --graph-node-surface: #242936;
+  --graph-node-border: #42495f;
+}
+
+.graph-record--resource {
+  --graph-node-accent: #8fb4bb;
+  --graph-node-surface: #202e34;
+  --graph-node-border: #38545d;
+}
+
+.graph-record--entity {
+  --graph-node-accent: #c1d2e7;
+  --graph-node-surface: #2a3a4d;
+  --graph-node-border: #8da8c6;
+}
+
+.graph-record--finding {
+  --graph-node-accent: #e1aba9;
+  --graph-node-surface: #38292f;
+  --graph-node-border: #d4908e;
 }
 
 .graph-record button {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
   height: 100%;
   padding: 0 8px;
   appearance: none;
-  border: 1px solid #3c404b;
-  border-radius: 7px;
-  background: #20222a;
-  color: #ebeef4;
+  border: 1px solid var(--graph-node-border);
+  border-inline-start: 3px solid var(--graph-node-accent);
+  border-radius: 6px;
+  background: var(--graph-node-surface);
+  box-shadow: 0 3px 8px #0c10164d;
+  color: var(--text, #edf1f5);
   font: inherit;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.2;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.16;
   text-align: left;
   cursor: grab;
-  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+  transition: opacity 140ms ease, border-color 140ms ease;
+}
+
+.graph-record--permission button,
+.graph-record--interaction button {
+  gap: 6px;
+  border-inline-start-width: 2px;
+  border-radius: 5px;
+  font-weight: 550;
 }
 
 .intelligence-graph .react-flow__node.dragging button {
@@ -86,146 +181,75 @@
 
 .graph-record button:hover,
 .graph-record button:focus-visible {
-  border-color: #a7afbf;
-  background: #2c303a;
-  color: #fff;
+  opacity: 1;
+  border-color: var(--graph-node-accent);
 }
 
 .graph-record button:focus-visible {
-  outline: 2px solid #d7d9e3;
+  outline: 2px solid var(--graph-node-accent);
   outline-offset: 2px;
+}
+
+.graph-record--muted button {
+  opacity: 0.43;
 }
 
 .graph-record__icon {
   display: grid;
-  flex: 0 0 27px;
+  flex: 0 0 24px;
   place-items: center;
-  height: 27px;
+  height: 24px;
+  border: 1px solid color-mix(in srgb, var(--graph-node-accent) 27%, transparent);
   border-radius: 5px;
-  background: #30343f;
-  color: #d2d9e7;
+  color: var(--graph-node-accent);
 }
 
 .graph-record__icon svg {
-  width: 15px;
-  height: 15px;
+  width: 14px;
+  height: 14px;
   stroke-width: 1.8;
-}
-
-.graph-record--resource button {
-  background: #1c2228;
-  border-color: #3a464f;
-}
-
-.graph-record--resource .graph-record__icon {
-  background: #29353d;
-  color: #c3ced7;
-}
-
-.graph-record--permission button,
-.graph-record--interaction button {
-  gap: 6px;
-  padding-inline: 7px;
-  border-radius: 5px;
-  color: #d7dbe4;
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.graph-record--permission button {
-  background: #1b1d25;
-}
-
-.graph-record--interaction button {
-  background: #202027;
 }
 
 .graph-record--permission .graph-record__icon,
 .graph-record--interaction .graph-record__icon {
-  flex-basis: 17px;
-  height: 17px;
-  border-radius: 0;
-  background: transparent;
-  color: #adb4c2;
+  flex-basis: 13px;
+  border: 0;
 }
 
 .graph-record--permission svg,
 .graph-record--interaction svg {
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
 }
 
 .graph-record__label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.graph-record--agent .graph-record__label,
-.graph-record--resource .graph-record__label,
-.intelligence-graph--compact .graph-record__label {
   display: -webkit-box;
+  overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow-wrap: anywhere;
-  white-space: normal;
 }
 
-.intelligence-graph--compact .graph-record {
-  width: 128px;
-}
-
-.intelligence-graph--compact .graph-record--permission,
-.intelligence-graph--compact .graph-record--interaction {
-  width: 102px;
+.intelligence-graph--compact .graph-lane {
+  font-size: 10px;
+  letter-spacing: 0.03em;
 }
 
 .intelligence-graph--compact .graph-record button {
-  gap: 6px;
+  gap: 5px;
   padding-inline: 5px;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1;
 }
 
-.intelligence-graph--compact .graph-record--agent .graph-record__icon,
-.intelligence-graph--compact .graph-record--resource .graph-record__icon {
-  flex-basis: 22px;
-  height: 22px;
+.intelligence-graph--compact .graph-record__icon {
+  flex-basis: 19px;
+  height: 19px;
 }
 
-.intelligence-graph--compact .graph-record--permission button,
-.intelligence-graph--compact .graph-record--interaction button {
-  line-height: 1.05;
-}
-
-.graph-record--muted button {
-  opacity: 0.4;
-}
-
-.graph-record--muted button:hover,
-.graph-record--muted button:focus-visible {
-  opacity: 1;
-}
-
-.graph-record--entity button {
-  border-color: #98a8bf;
-  background: #282d39;
-  color: #f9faff;
-}
-
-.graph-record--finding button {
-  border-color: #e96a73;
-  background: #3c242c;
-  color: #fff0f1;
-}
-
-.graph-record--finding .graph-record__icon {
-  background: #53303a;
-  color: #ffabb0;
-}
-
-.graph-record--finding.graph-record--permission .graph-record__icon,
-.graph-record--finding.graph-record--interaction .graph-record__icon {
-  background: transparent;
+.intelligence-graph--compact .graph-record--permission .graph-record__icon,
+.intelligence-graph--compact .graph-record--interaction .graph-record__icon {
+  flex-basis: 11px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -233,38 +257,3 @@
     transition: none;
   }
 }
-
-
-/* Refined graph materiality — clearer nodes without ornamental neon */
-.intelligence-graph .react-flow {
-  --xy-background-color: #111319;
-  --xy-controls-button-background-color: #252932;
-  --xy-controls-button-background-color-hover: #323741;
-  --xy-controls-button-border-color: #3e434e;
-}
-.intelligence-graph .react-flow__controls {
-  border-color: #444954;
-  border-radius: 10px;
-  background: #242830;
-}
-.graph-record button {
-  border-color: #4a505b;
-  border-radius: 8px;
-  background: #272c35;
-  color: #eff0ee;
-  font-weight: 650;
-  box-shadow: 0 3px 14px rgba(0,0,0,.12);
-}
-.graph-record__icon { background: #363e49; color: #e0e5ec; }
-.graph-record--resource button { background: #202b32; border-color: #52606a; }
-.graph-record--resource .graph-record__icon { background: #31414b; color: #d0dce4; }
-.graph-record--permission button { background: #22252c; }
-.graph-record--interaction button { background: #26262e; }
-.graph-record--entity button { border-color: #a0b0bf; background: #343b47; }
-.graph-record--finding button {
-  border-color: #c8757b;
-  background: #432a30;
-  color: #fae8e8;
-  box-shadow: 0 0 0 2px rgba(198,107,112,.12);
-}
-.graph-record--finding .graph-record__icon { background: #5d363e; color: #f7c4c7; }

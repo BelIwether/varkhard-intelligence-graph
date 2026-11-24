@@ -153,9 +153,16 @@ async def test_serves_built_frontend_alongside_api(tmp_path):
     assets = tmp_path / "assets"
     assets.mkdir()
     (assets / "bundle.js").write_text("export {};", encoding="utf-8")
+    shield = Path(__file__).resolve().parents[1] / "frontend" / "public" / "varkhard-shield.svg"
+    shield_content = shield.read_bytes()
+    (tmp_path / shield.name).write_bytes(shield_content)
 
     async with _client(create_app(_DEMO, frontend_dir=tmp_path)) as client:
         assert (await client.get("/")).text == "<main>Dashboard</main>"
         assert (await client.get("/assets/bundle.js")).text == "export {};"
+        response = await client.get("/varkhard-shield.svg")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/svg+xml"
+        assert response.content == shield_content
         assert (await client.get("/api/graph")).status_code == 200
         assert (await client.get("/api/unknown")).status_code == 404

@@ -70,6 +70,12 @@ def create_app(
         def dashboard() -> FileResponse:
             return FileResponse(index)
 
+    shield = frontend_dir / "varkhard-shield.svg"
+    if shield.is_file():
+        @app.get("/varkhard-shield.svg", include_in_schema=False)
+        def dashboard_shield() -> FileResponse:
+            return FileResponse(shield, media_type="image/svg+xml")
+
     assets = frontend_dir / "assets"
     if assets.is_dir():
         app.mount("/assets", StaticFiles(directory=assets), name="dashboard-assets")
