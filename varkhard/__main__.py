@@ -9,7 +9,8 @@ from pathlib import Path
 import relate
 
 from .demo import seed_demo
-from .detection import detect_findings
+from .detection import detect_snapshot
+from .snapshot import read_snapshot
 from .store import DEFAULT_DB_PATH, GraphStore, GraphStoreError
 
 
@@ -36,7 +37,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Seeded synthetic graph at {args.db}")
         else:
             with GraphStore(args.db, read_only=True) as store:
-                findings = detect_findings(store)
+                snapshot = read_snapshot(store)
+            quality = snapshot.evidence_quality
+            if quality.status == "incomplete":
+                print(
+                    f"VARKHARD: Incomplete evidence ({quality.invalid_records} invalid records, "
+                    f"{quality.invalid_relationships} invalid or missing relationships).",
+                    file=sys.stderr,
+                )
+            findings = detect_snapshot(snapshot)
             print(json.dumps([asdict(finding) for finding in findings], indent=2))
     except (GraphStoreError, relate.Error, OSError) as error:
         print(f"VARKHARD: {error}", file=sys.stderr)
