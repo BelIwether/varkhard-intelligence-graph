@@ -25,6 +25,7 @@ import { Bot, Box, GitBranch, KeyRound } from 'lucide-react'
 import { memo, useLayoutEffect, useMemo, useRef, useState, type FocusEvent } from 'react'
 import '@xyflow/react/dist/style.css'
 import type { GraphEdge, GraphNode, GraphNodeKind } from './api'
+import { placeTriggerLabels } from './graphLabels'
 import './graph.css'
 
 export type GraphFocus = {
@@ -42,6 +43,7 @@ type GraphProps = {
   edges: GraphEdge[]
   focus?: GraphFocus
   expanded?: boolean
+  inspectorHidden?: boolean
   onNodeSelect: (node: GraphNode) => void
 }
 
@@ -55,7 +57,7 @@ type RecordNode = Node<{
 }, 'record'>
 type LaneNode = Node<{ kind: GraphNodeKind }, 'lane'>
 type FlowNode = RecordNode | LaneNode
-type RelationshipEdge = Edge<{ title: string; label?: string; sameLane: boolean }, 'relationship'>
+type RelationshipEdge = Edge<{ title: string; label?: string; labelBounds?: Rect; sameLane: boolean }, 'relationship'>
 
 const lanes = {
   agent: { label: 'Agents', singular: 'AI agent', Icon: Bot, x: 0, compactX: 0, height: 46, gap: 13 },
@@ -159,15 +161,19 @@ const Relationship = memo(function Relationship({
   const [path, centerX, centerY] = data?.sameLane
     ? getSmoothStepPath({ ...endpoints, borderRadius: 10, offset: triggerRouteOffset })
     : getBezierPath({ ...endpoints, curvature: 0.28 })
-  const labelX = data?.sameLane ? Math.max(sourceX, targetX) + 8 : centerX
-  const labelY = data?.sameLane ? (sourceY + targetY) / 2 : centerY
+  const label = data?.labelBounds
+  const attachX = label ? Math.max(label.x, Math.min(centerX, label.x + label.width)) : centerX
+  const attachY = label ? Math.max(label.y, Math.min(centerY, label.y + label.height)) : centerY
 
   return (
     <g>
       <title>{data?.title}</title>
       <BaseEdge id={id} path={path} markerEnd={markerEnd} style={style} interactionWidth={12} />
-      {data?.label && (
-        <text className="graph-edge-label" x={labelX} y={labelY} dominantBaseline="central" aria-hidden="true">
+      {label && Math.hypot(attachX - centerX, attachY - centerY) > 5 && (
+        <line className="graph-edge-label-leader" x1={centerX} y1={centerY} x2={attachX} y2={attachY} aria-hidden="true" />
+      )}
+      {data?.label && label && (
+        <text className="graph-edge-label" x={label.x + 4} y={label.y + label.height / 2} dominantBaseline="central" aria-hidden="true">
           {data.label}
         </text>
       )}
@@ -360,69 +366,133 @@ function flowEdges(nodes: GraphNode[], edges: GraphEdge[], focus?: GraphFocus): 
   })
 }
 
-function investigationViewport(bounds: Rect, width: number, height: number, tone: GraphFocus['tone']) {
+function layoutEdgeLabels(edges: RelationshipEdge[], nodes: FlowNode[]) {
+  if (!edges.some((edge) => edge.data?.label)) return edges
+
+  const bounds = new Map<string, Rect>()
+  const obstacles: Rect[] = []
+  for (const node of nodes) {
+    const { width, height } = node.measured ?? {}
+    if (!width || !height) continue
+    const box = { ...node.position, width, height }
+    bounds.set(node.id, box)
+    // Origin and step badges protrude above their record cards.
+    const badge = node.type === 'record' && (node.data.isOrigin || node.data.stepNumber !== undefined)
+    obstacles.push(badge ? { ...box, y: box.y - 8, height: box.height + 8 } : box)
+  }
+
+  const labels = edges.flatMap((edge) => {
+    const source = bounds.get(edge.source)
+    const target = bounds.get(edge.target)
+    const text = edge.data?.label
+    return text && source && target ? [{ id: edge.id, text, source, target }] : []
+  })
+  const placements = placeTriggerLabels(labels, obstacles)
+  return edges.map((edge) => {
+    const labelBounds = placements.get(edge.id)
+    return labelBounds && edge.data ? { ...edge, data: { ...edge.data, labelBounds } } : edge
+  })
+}
+
+function graphScopeBounds(canvas: HTMLElement, nodeBounds: Rect, edgeIds?: ReadonlySet<string>) {
+  let left = nodeBounds.x
+  let top = nodeBounds.y
+  let right = left + nodeBounds.width
+  let bottom = top + nodeBounds.height
+
+  for (const edge of canvas.querySelectorAll<SVGGElement>('.react-flow__edge[data-id]')) {
+    if (edgeIds && !edgeIds.has(edge.dataset.id ?? '')) continue
+    // These SVG groups use graph coordinates, including their rendered labels.
+    const box = edge.getBBox()
+    if (!box.width && !box.height) continue
+    left = Math.min(left, box.x)
+    top = Math.min(top, box.y)
+    right = Math.max(right, box.x + box.width)
+    bottom = Math.max(bottom, box.y + box.height)
+  }
+
+  // Leave room for arrow markers, edge strokes and origin or step badges.
+  const margin = 9
+  return { x: left - margin, y: top - margin, width: right - left + margin * 2, height: bottom - top + margin * 2 }
+}
+
+function investigationViewport(bounds: Rect, width: number, height: number, tone?: GraphFocus['tone']) {
   const horizontalPadding = Math.min(19, width * 0.045)
   const topPadding = Math.min(20, height * 0.07)
   const bottomPadding = Math.min(52, height * 0.17)
-  const maxZoom = tone === 'origin' ? 1.65 : tone === 'step' ? 1.5 : 1.4
+  const maxZoom = tone === 'origin' ? 1.65 : tone === 'step' ? 1.5 : tone ? 1.4 : 1.25
   const viewport = getViewportForBounds(
     bounds,
     width - horizontalPadding * 2,
     height - topPadding - bottomPadding,
-    minZoom,
+    0,
     maxZoom,
     0,
   )
   return { ...viewport, x: viewport.x + horizontalPadding, y: viewport.y + topPadding }
 }
 
-function GraphViewport({ focus, edges }: { focus?: GraphFocus; edges: GraphEdge[] }) {
-  const { fitView, getNodesBounds, getNode, getViewport, setViewport, viewportInitialized } = useReactFlow()
+function GraphViewport({ focus, edges, layout, expanded, inspectorHidden }: {
+  focus?: GraphFocus
+  edges: GraphEdge[]
+  layout: FlowNode[]
+  expanded: boolean
+  inspectorHidden: boolean
+}) {
+  const { getNodesBounds, getNode, getNodes, setViewport, viewportInitialized } = useReactFlow()
   const initialized = useNodesInitialized()
   const width = useStore((state) => state.width)
   const height = useStore((state) => state.height)
-  const previous = useRef<{ focus?: GraphFocus; width: number; height: number }>(undefined)
+  const canvas = useStore((state) => state.domNode)
+  const previous = useRef<{
+    focus?: GraphFocus
+    width: number
+    height: number
+    layout: FlowNode[]
+    expanded: boolean
+    inspectorHidden: boolean
+  }>(undefined)
   const zoom = useStore(({ transform }) => Math.round(transform[2] * 100))
 
   useLayoutEffect(() => {
-    if (!initialized || !viewportInitialized || width < 64 || height < 64) return
+    if (!canvas || !initialized || !viewportInitialized) return
 
-    const prior = previous.current
-    previous.current = { focus, width, height }
-    if (prior?.focus !== focus) {
-      const duration = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 220
-      const nodeIds = focus?.nodeIds.filter((id) => getNode(id)) ?? []
-      if (!focus || !nodeIds.length) {
-        void fitView({ ...fitViewOptions, duration })
-        return
-      }
+    // Wait for React Flow to render the new edge geometry and the workspace to
+    // settle before measuring. Subsequent resize notifications replace this fit.
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        const currentWidth = canvas.clientWidth
+        const currentHeight = canvas.clientHeight
+        if (currentWidth < 64 || currentHeight < 64) return
 
-      const bounds = getNodesBounds(nodeIds)
-      const highlighted = new Set(focus.edgeIds)
-      const triggerNodes = edges.flatMap((edge) =>
-        highlighted.has(edge.id) && edge.kind === 'TRIGGERS' ? [edge.source, edge.target] : [],
-      )
-      if (triggerNodes.length) {
-        const route = getNodesBounds(triggerNodes)
-        // Trigger routes and their labels extend past the interaction cards.
-        bounds.width = Math.max(bounds.width, route.x + route.width + triggerRouteOffset + 48 - bounds.x)
-      }
-      bounds.y -= 9
-      bounds.height += 9
-      void setViewport(investigationViewport(bounds, width, height, focus.tone), { duration })
-      return
-    }
+        const prior = previous.current
+        const resized = prior?.width !== currentWidth || prior.height !== currentHeight || prior.expanded !== expanded
+          || prior.inspectorHidden !== inspectorHidden
+        if (!resized && prior?.focus === focus && prior.layout === layout) return
 
-    if (prior && (prior.width !== width || prior.height !== height)) {
-      // Preserve the world point at the center when the canvas itself resizes.
-      const viewport = getViewport()
-      void setViewport({
-        x: viewport.x + (width - prior.width) / 2,
-        y: viewport.y + (height - prior.height) / 2,
-        zoom: viewport.zoom,
+        previous.current = { focus, width: currentWidth, height: currentHeight, layout, expanded, inspectorHidden }
+        const edgeIds = focus ? new Set(focus.edgeIds) : undefined
+        const focusedNodes = new Set(focus?.nodeIds)
+        if (edgeIds?.size) {
+          for (const edge of edges) {
+            if (edgeIds.has(edge.id)) {
+              focusedNodes.add(edge.source)
+              focusedNodes.add(edge.target)
+            }
+          }
+        }
+        const selectedNodes = [...focusedNodes].filter((id) => getNode(id))
+        const scoped = selectedNodes.length > 0
+        const nodeIds = scoped ? selectedNodes : getNodes().map(({ id }) => id)
+        if (!nodeIds.length) return
+
+        const bounds = graphScopeBounds(canvas, getNodesBounds(nodeIds), scoped ? edgeIds : undefined)
+        const duration = resized || window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 220
+        void setViewport(investigationViewport(bounds, currentWidth, currentHeight, scoped ? focus?.tone : undefined), { duration })
       })
-    }
-  }, [edges, fitView, focus, getNode, getNodesBounds, getViewport, height, initialized, setViewport, viewportInitialized, width])
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [canvas, edges, expanded, focus, getNode, getNodes, getNodesBounds, height, initialized, inspectorHidden, layout, setViewport, viewportInitialized, width])
 
   return (
     <Controls position="bottom-right" orientation="horizontal" showInteractive={false} fitViewOptions={fitViewOptions}>
@@ -431,7 +501,7 @@ function GraphViewport({ focus, edges }: { focus?: GraphFocus; edges: GraphEdge[
   )
 }
 
-function GraphCanvas({ nodes, edges, focus, onNodeSelect, compact }: GraphProps & { compact: boolean }) {
+function GraphCanvas({ nodes, edges, focus, onNodeSelect, expanded = false, inspectorHidden = false, compact }: GraphProps & { compact: boolean }) {
   const layout = useMemo(() => layoutGraph(nodes, edges, compact), [nodes, edges, compact])
   const [positioned, setPositioned, onNodesChange] = useNodesState(layout)
   const previousLayout = useRef(layout)
@@ -468,7 +538,8 @@ function GraphCanvas({ nodes, edges, focus, onNodeSelect, compact }: GraphProps 
       }
     })
   }, [positioned, focus])
-  const visibleEdges = useMemo(() => flowEdges(nodes, edges, focus), [nodes, edges, focus])
+  const styledEdges = useMemo(() => flowEdges(nodes, edges, focus), [nodes, edges, focus])
+  const visibleEdges = useMemo(() => layoutEdgeLabels(styledEdges, visibleNodes), [styledEdges, visibleNodes])
 
   return (
     <ReactFlow<FlowNode, RelationshipEdge>
@@ -504,7 +575,7 @@ function GraphCanvas({ nodes, edges, focus, onNodeSelect, compact }: GraphProps 
       proOptions={{ hideAttribution: true }}
     >
       <Background color="#303135" gap={24} size={1} />
-      <GraphViewport focus={focus} edges={edges} />
+      <GraphViewport focus={focus} edges={edges} layout={layout} expanded={expanded} inspectorHidden={inspectorHidden} />
     </ReactFlow>
   )
 }

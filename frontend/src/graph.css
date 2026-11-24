@@ -277,6 +277,13 @@
   pointer-events: none;
 }
 
+.graph-edge-label-leader {
+  stroke: #a9676d;
+  stroke-width: 1px;
+  stroke-dasharray: 2px 2px;
+  pointer-events: none;
+}
+
 .graph-edge--finding .graph-edge-label,
 .graph-edge--origin .graph-edge-label,
 .graph-edge--step .graph-edge-label {

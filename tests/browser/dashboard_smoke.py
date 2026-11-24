@@ -36,15 +36,67 @@ def graph_ids(graph: Locator, selector: str) -> set[str]:
 def graph_state(graph: Locator) -> dict[str, float]:
     return graph.locator(".react-flow__viewport").evaluate("""element => {
         const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform);
-        const canvas = element.closest('.react-flow').getBoundingClientRect();
-        return {
-            zoom: matrix.a,
-            x: matrix.e,
-            y: matrix.f,
-            centerX: (canvas.width / 2 - matrix.e) / matrix.a,
-            centerY: (canvas.height / 2 - matrix.f) / matrix.a,
-        };
+        return { zoom: matrix.a, x: matrix.e };
     }""")
+
+
+def check_graph_geometry(
+    graph: Locator, node_ids: list[str], numbered_triggers: list[int], state: str,
+) -> None:
+    geometry = graph.evaluate(r"""async (graph, nodeIds) => {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const frame = graph.getBoundingClientRect();
+        const issues = [];
+        const inside = box =>
+            box.width > 0 && box.height > 0 &&
+            box.left >= frame.left - 1 && box.right <= frame.right + 1 &&
+            box.top >= frame.top - 1 && box.bottom <= frame.bottom + 1;
+        const overlaps = (a, b) =>
+            Math.min(a.right, b.right) > Math.max(a.left, b.left) + 0.5 &&
+            Math.min(a.bottom, b.bottom) > Math.max(a.top, b.top) + 0.5;
+
+        const cards = new Map();
+        const obstacles = [];
+        for (const node of graph.querySelectorAll('.react-flow__node')) {
+            const id = node.dataset.id;
+            const card = node.querySelector('.graph-record');
+            if (card) cards.set(id, card);
+            for (const element of node.querySelectorAll('.graph-record, .graph-record__marker, .graph-lane')) {
+                obstacles.push({ id, box: element.getBoundingClientRect() });
+            }
+        }
+        for (const id of nodeIds) {
+            const card = cards.get(id);
+            if (!card) {
+                issues.push(`missing card ${id}`);
+                continue;
+            }
+            for (const element of [card, ...card.querySelectorAll('.graph-record__marker')]) {
+                if (!inside(element.getBoundingClientRect())) issues.push(`clipped card ${id}`);
+            }
+        }
+
+        const labels = [];
+        for (const label of graph.querySelectorAll('.graph-edge-label')) {
+            const match = label.textContent.match(/^\s*(\d+)\s*[·.]\s*Triggers\s*$/i);
+            if (!match) continue;
+            const name = label.textContent.trim();
+            const box = label.getBoundingClientRect();
+            if (!inside(box) || getComputedStyle(label).visibility === 'hidden') {
+                issues.push(`clipped label ${name}`);
+            }
+            for (const obstacle of obstacles) {
+                if (overlaps(box, obstacle.box)) issues.push(`${name} overlaps ${obstacle.id}`);
+            }
+            for (const previous of labels) {
+                if (overlaps(box, previous.box)) issues.push(`${name} overlaps ${previous.name}`);
+            }
+            labels.push({ name, box, order: Number(match[1]) });
+        }
+        return { issues, labels: labels.map(({ order }) => order).sort((a, b) => a - b) };
+    }""", node_ids)
+    assert geometry["labels"] == numbered_triggers, (state, geometry)
+    assert not geometry["issues"], (state, geometry["issues"])
 
 
 def check_zoom(page: Page, graph: Locator, *, touch: bool = False) -> None:
@@ -65,6 +117,21 @@ def check_zoom(page: Page, graph: Locator, *, touch: bool = False) -> None:
     exact_button(graph, "Zoom out").click()
     page.wait_for_function(expect_zoom, arg=[enlarged, -1])
     exact_button(graph, "Fit graph").click()
+
+
+def zoom_in_twice(page: Page, graph: Locator, *, touch: bool = False) -> float:
+    initial_zoom = graph_state(graph)["zoom"]
+    button = exact_button(graph, "Zoom in")
+    for _ in range(2):
+        if touch:
+            button.tap()
+        else:
+            button.click()
+    page.wait_for_function("""previous => {
+        const viewport = document.querySelector('.react-flow__viewport');
+        return new DOMMatrixReadOnly(getComputedStyle(viewport).transform).a > previous + .001;
+    }""", arg=initial_zoom)
+    return graph_state(graph)["zoom"]
 
 
 def check_header(page: Page) -> None:
@@ -127,8 +194,10 @@ def check_investigation(page: Page, graph: Locator, finding: dict, edges: list[d
     expect(full_path).to_have_attribute("aria-pressed", "true")
     assert graph_ids(graph, ".react-flow__node:has(.graph-record--finding)") == set(investigation["node_ids"])
     assert graph_ids(graph, ".react-flow__edge.graph-edge--finding") == set(investigation["edge_ids"])
-    if finding["rule_id"] == "suspicious_chain":
+    is_chain = finding["rule_id"] == "suspicious_chain"
+    if is_chain:
         check_recorded_chain(graph, investigation, edges)
+    check_graph_geometry(graph, investigation["node_ids"], [1, 2] if is_chain else [], f"{finding['category']} path")
 
     affected = exact_button(toolbar, "Show Affected Nodes")
     affected.click()
@@ -160,6 +229,10 @@ def check_investigation(page: Page, graph: Locator, finding: dict, edges: list[d
         record_node_id = evidence_step["record_node_id"]
         if record_node_id:
             assert graph_ids(graph, ".react-flow__node:has(.graph-record--selected)") == {record_node_id}
+        check_graph_geometry(
+            graph, evidence_step["node_ids"], [index] if is_chain and index else [],
+            f"{finding['category']} step {index + 1}",
+        )
         if index < len(investigation["steps"]) - 1:
             next_step.click()
     expect(next_step).to_be_disabled()
@@ -316,14 +389,14 @@ def check_search(page: Page, graph: Locator) -> None:
     print("Verified search across all five categories, name and ID queries, empty results and keyboard selection.")
 
 
-def drag_card(page: Page, card: Locator) -> None:
+def drag_card(page: Page, card: Locator, destination: tuple[float, float] | None = None) -> None:
     card.scroll_into_view_if_needed()
     box = card.bounding_box()
     assert box
     x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
     page.mouse.move(x, y)
     page.mouse.down()
-    page.mouse.move(x + 45, y + 35, steps=10)
+    page.mouse.move(*(destination or (x + 45, y + 35)), steps=10)
     page.mouse.up()
 
 
@@ -377,6 +450,22 @@ def check_graph_movement(page: Page, graph: Locator) -> None:
     print("Verified graph selection with picker, mouse and keyboard, plus pan, zoom, fit, drag and layout reset.")
 
 
+def check_label_collision_after_drag(page: Page, graph: Locator, finding: dict) -> None:
+    select_finding(page, finding)
+    agent = exact_button(graph, "AI agent: Research Agent")
+    agent.scroll_into_view_if_needed()
+    node = graph.locator('.react-flow__node[data-id="agent:agent-research"]')
+    label = graph.locator(".graph-edge-label").filter(has_text=re.compile(r"^1\s*·\s*Triggers$"))
+    box = label.bounding_box()
+    assert box
+    before = node.evaluate("node => node.style.transform")
+    drag_card(page, agent, (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2))
+    assert node.evaluate("node => node.style.transform") != before
+    check_graph_geometry(graph, finding["investigation"]["node_ids"], [1, 2], "dragged card across trigger label")
+    exact_button(page.locator("#graph"), "Reset Graph").click()
+    print("Verified trigger labels avoid a graph card dragged into their former position.")
+
+
 def check_focus_mode(
     page: Page, graph: Locator, finding: dict, screenshots: Path | None, *, touch: bool = False,
 ) -> None:
@@ -399,32 +488,35 @@ def check_focus_mode(
         drag_card(page, selected.get_by_role("button"))
         assert selected.evaluate("node => node.style.transform") != node_position
 
-    pre_zoom = graph_state(graph)["zoom"]
-    activate(exact_button(graph, "Zoom in"))
-    page.wait_for_function("""previous => {
-        const viewport = document.querySelector('.react-flow__viewport');
-        return new DOMMatrixReadOnly(getComputedStyle(viewport).transform).a > previous + .001;
-    }""", arg=pre_zoom)
+    zoom_in_twice(page, graph, touch=touch)
     viewport = graph.locator(".react-flow__viewport")
     original_viewport = viewport.element_handle()
-    original_camera = graph_state(graph)
     original_position = selected.evaluate("node => node.style.transform")
     inspector = page.locator("#inspector")
     workspace = page.get_by_role("region", name="Investigation workspace")
     expand = exact_button(workspace, "Expand Investigation")
     exit_focus = exact_button(workspace, "Exit Focus Mode")
 
-    def assert_retained() -> None:
-        viewport.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    def assert_retained(state: str) -> None:
+        check_graph_geometry(graph, step["node_ids"], [1], state)
         assert viewport.evaluate("(element, original) => element === original", original_viewport)
         assert selected.evaluate("node => node.style.transform") == original_position
         assert graph_ids(graph, ".react-flow__node:has(.graph-record--step)") == set(step["node_ids"])
         assert graph_ids(graph, ".react-flow__edge.graph-edge--step") == set(step["edge_ids"])
         expect(toolbar.get_by_role("status")).to_contain_text(step["title"])
-        current_camera = graph_state(graph)
-        assert abs(current_camera["zoom"] - original_camera["zoom"]) < 0.01, current_camera
-        for axis in ("centerX", "centerY"):
-            assert abs(current_camera[axis] - original_camera[axis]) < 6, (axis, original_camera, current_camera)
+
+    def check_chain_frames(state: str) -> None:
+        investigation = finding["investigation"]
+        activate(exact_button(toolbar, "Highlight Full Path"))
+        check_graph_geometry(graph, investigation["node_ids"], [1, 2], f"{state} full path")
+        activate(exact_button(toolbar, "Step Through Evidence"))
+        for index, evidence_step in enumerate(investigation["steps"]):
+            check_graph_geometry(
+                graph, evidence_step["node_ids"], [index] if index else [], f"{state} step {index + 1}",
+            )
+            if index < len(investigation["steps"]) - 1:
+                activate(exact_button(toolbar, "Next evidence step"))
+        activate(exact_button(toolbar, "Previous evidence step"))
 
     def assert_expanded() -> None:
         expect(exit_focus).to_be_visible()
@@ -440,7 +532,8 @@ def check_focus_mode(
     expect(active_step).to_have_attribute("aria-pressed", "true")
     activate(expand)
     assert_expanded()
-    assert_retained()
+    assert_retained("entered Focus Mode after manual zoom")
+    check_chain_frames("Focus Mode initial Inspector state")
 
     if touch:
         expect(inspector).to_be_hidden()
@@ -450,11 +543,13 @@ def check_focus_mode(
         expect(active_step).to_have_attribute("aria-pressed", "true")
         activate(exact_button(workspace, "Hide Inspector"))
         expect(inspector).to_be_hidden()
-        assert_retained()
+        assert_retained("hidden Inspector")
+        check_chain_frames("Focus Mode Inspector hidden")
 
     activate(exact_button(workspace, "Show Inspector"))
     expect(active_step).to_have_attribute("aria-pressed", "true")
-    assert_retained()
+    assert_retained("restored Inspector")
+    check_chain_frames("Focus Mode Inspector restored")
     if screenshots is not None:
         mode = f"mobile-{page.viewport_size['width']}" if touch else "desktop"
         page.screenshot(path=screenshots / f"focus-{mode}.png")
@@ -462,13 +557,13 @@ def check_focus_mode(
     page.keyboard.press("Escape")
     expect(expand).to_be_focused()
     expect(active_step).to_have_attribute("aria-pressed", "true")
-    assert_retained()
+    assert_retained("exited Focus Mode with Escape")
     activate(expand)
     assert_expanded()
     activate(exit_focus)
     expect(expand).to_be_focused()
     expect(active_step).to_have_attribute("aria-pressed", "true")
-    assert_retained()
+    assert_retained("exited Focus Mode with button")
 
     activate(expand)
     activate(exact_button(toolbar, "Next evidence step"))
@@ -477,6 +572,7 @@ def check_focus_mode(
     assert graph_ids(graph, ".react-flow__edge.graph-edge--step") == set(last_step["edge_ids"])
     activate(exit_focus)
     expect(exact_button(inspector, last_step["title"])).to_have_attribute("aria-pressed", "true")
+    check_graph_geometry(graph, last_step["node_ids"], [2], "continued evidence step after exit")
     assert page.evaluate("document.documentElement.scrollWidth === window.innerWidth")
 
 
@@ -533,8 +629,9 @@ def check_desktop(browser: Browser, url: str, screenshots: Path | None) -> dict:
         check_investigation(page, graph, finding, data["edges"])
         check_record_details(page, finding, data)
     capture(page, screenshots, "desktop-chain.png")
+    check_label_collision_after_drag(page, graph, findings["suspicious_chain"])
     check_focus_mode(page, graph, findings["suspicious_chain"], screenshots)
-    print("Verified desktop Focus Mode, Inspector toggling, and retention of evidence, camera and a dragged position.")
+    print("Verified desktop Focus Mode refits evidence while retaining selection and a dragged position.")
 
     check_search(page, graph)
     check_graph_movement(page, graph)
@@ -594,6 +691,9 @@ def check_short_viewport(
     expand.tap()
     expect(exit_focus).to_be_visible()
     expect(inspector).to_be_hidden()
+    toolbar = page.get_by_role("group", name="Investigation controls")
+    path_ids = finding["investigation"]["node_ids"]
+    manual_zoom = None
 
     for inspector_state in ("hidden", "shown"):
         if inspector_state == "shown":
@@ -611,12 +711,21 @@ def check_short_viewport(
         })""")
         assert visible_height >= 214, (width, height, inspector_state, visible_height)
         assert page.evaluate("document.documentElement.scrollWidth") == width
-        check_zoom(page, graph, touch=True)
+        check_graph_geometry(graph, path_ids, [1, 2], f"short viewport Inspector {inspector_state}")
+        if manual_zoom is not None:
+            assert graph_state(graph)["zoom"] < manual_zoom - 0.001, (width, height, inspector_state)
         if screenshots is not None:
             page.screenshot(path=screenshots / f"focus-short-{width}x{height}-{inspector_state}.png")
+        check_zoom(page, graph, touch=True)
+        exact_button(toolbar, "Trace Origin").tap()
+        exact_button(toolbar, "Highlight Full Path").tap()
+        check_graph_geometry(graph, path_ids, [1, 2], "short viewport before manual zoom")
+        manual_zoom = zoom_in_twice(page, graph, touch=True)
 
     exact_button(workspace, "Hide Inspector").tap()
     expect(inspector).to_be_hidden()
+    check_graph_geometry(graph, path_ids, [1, 2], "short viewport Inspector hidden again")
+    assert graph_state(graph)["zoom"] < manual_zoom - 0.001, (width, height, "hidden again")
     navigation = page.get_by_role("navigation", name="Primary navigation")
     navigation.get_by_role("link", name="Findings", exact=True).tap()
     expect(expand).to_be_visible()

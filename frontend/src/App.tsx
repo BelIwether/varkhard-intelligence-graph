@@ -363,7 +363,15 @@ function DashboardContent({ data, expanded, onExpandedChange, expandButton }: {
           )}
           <div className="graph-viewport">
             {data.nodes.length ? (
-              <IntelligenceGraph key={graphRevision} nodes={data.nodes} edges={data.edges} focus={focus} onNodeSelect={onNodeSelect} expanded={expanded} />
+              <IntelligenceGraph
+                key={graphRevision}
+                nodes={data.nodes}
+                edges={data.edges}
+                focus={focus}
+                onNodeSelect={onNodeSelect}
+                expanded={expanded}
+                inspectorHidden={inspectorHidden}
+              />
             ) : <p className="graph-empty">The Relate file contains no graph records.</p>}
           </div>
           <ul className="legend" aria-label="Graph node types">
