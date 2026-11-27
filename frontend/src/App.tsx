@@ -9,12 +9,14 @@ import type { Dashboard, Finding, GraphEdge, GraphNode, Investigation } from './
 import { IntelligenceGraph } from './IntelligenceGraph'
 import type { GraphFocus } from './IntelligenceGraph'
 import { Inspector } from './Inspector'
+import { Knowledge } from './Knowledge'
 import { RecordSearch } from './RecordSearch'
 
 const navigation = [
   { id: 'overview', label: 'Overview' },
   { id: 'graph', label: 'Intelligence Graph' },
   { id: 'findings', label: 'Findings' },
+  { id: 'knowledge', label: 'Knowledge' },
 ]
 
 const legend = [
@@ -255,9 +257,10 @@ function InvestigationToolbar({ selection, onViewChange, onInspect }: {
   )
 }
 
-function DashboardContent({ data, expanded, onExpandedChange, expandButton }: {
+function DashboardContent({ data, expanded, hidden, onExpandedChange, expandButton }: {
   data: Dashboard
   expanded: boolean
+  hidden: boolean
   onExpandedChange: (expanded: boolean) => void
   expandButton: RefObject<HTMLButtonElement | null>
 }) {
@@ -299,7 +302,7 @@ function DashboardContent({ data, expanded, onExpandedChange, expandButton }: {
   }
 
   return (
-    <div className="analysis-workspace">
+    <div className="analysis-workspace" hidden={hidden}>
       {evidenceIncomplete && !expanded && (
         <aside className="evidence-notice" role="alert" aria-labelledby="evidence-notice-title">
           <TriangleAlert size={16} aria-hidden="true" />
@@ -436,6 +439,8 @@ export default function App() {
   const expandButton = useRef<HTMLButtonElement>(null)
   const returnScroll = useRef<number | null>(null)
   const navigationTarget = useRef<string | null>(null)
+  const wasKnowledge = useRef(false)
+  const knowledge = activeSection === 'knowledge'
 
   function changeExpanded(next: boolean) {
     if (next) returnScroll.current = window.scrollY
@@ -471,10 +476,21 @@ export default function App() {
   }, [expanded])
 
   useEffect(() => {
-    const updateSection = () => setActiveSection(sectionFromHash())
+    const updateSection = () => {
+      const section = sectionFromHash()
+      if (section === 'knowledge') setExpanded(false)
+      setActiveSection(section)
+    }
     window.addEventListener('hashchange', updateSection)
     return () => window.removeEventListener('hashchange', updateSection)
   }, [])
+
+  useLayoutEffect(() => {
+    if (knowledge || wasKnowledge.current) {
+      document.getElementById(window.location.hash.slice(1) || 'overview')?.scrollIntoView()
+    }
+    wasKnowledge.current = knowledge
+  }, [knowledge])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -506,7 +522,7 @@ export default function App() {
   const sourceStatus = request.status === 'loaded'
     ? (request.data.source.read_only ? 'Read-only' : 'Connected')
     : request.status === 'loading' ? 'Loading' : 'Unavailable'
-  const availableSections = request.status === 'loaded' ? navigation : navigation.slice(0, 1)
+  const availableSections = request.status === 'loaded' ? navigation : navigation.filter(({ id }) => id === 'overview' || id === 'knowledge')
   const currentSection = expanded ? 'graph' : activeSection
 
   function navigateFromWorkspace(id: string, event: MouseEvent<HTMLAnchorElement>) {
@@ -531,7 +547,7 @@ export default function App() {
                 onClick={(event) => navigateFromWorkspace(id, event)}>{label}</a>
             ))}
           </nav>
-          <div className="header-actions">
+          {!knowledge && <div className="header-actions">
             <span className="source-status" data-status={request.status} title={`Relate · ${sourceStatus}`}>
               <span className="source-dot" aria-hidden="true" />
               <span>Relate</span>
@@ -541,22 +557,23 @@ export default function App() {
               <RefreshCw className={request.status === 'loading' ? 'spinner' : undefined} size={15} aria-hidden="true" />
               Refresh
             </button>
-          </div>
+          </div>}
         </div>
       </header>
 
       <main id="main" className="main-content" tabIndex={-1}>
-        <Overview data={request.status === 'loaded' ? request.data : undefined} hidden={expanded} />
+        <Overview data={request.status === 'loaded' ? request.data : undefined} hidden={expanded || knowledge} />
 
         {request.status === 'loaded' && (
-          <DashboardContent data={request.data} expanded={expanded} onExpandedChange={changeExpanded} expandButton={expandButton} />
+          <DashboardContent data={request.data} expanded={expanded} hidden={knowledge}
+            onExpandedChange={changeExpanded} expandButton={expandButton} />
         )}
-        {request.status === 'loading' && (
+        {!knowledge && request.status === 'loading' && (
           <div className="panel request-state" role="status">
             <LoaderCircle className="spinner" size={22} aria-hidden="true" /> Loading graph from Relate…
           </div>
         )}
-        {request.status === 'error' && (
+        {!knowledge && request.status === 'error' && (
           <div className="panel request-state" role="alert">
             <TriangleAlert size={24} aria-hidden="true" />
             <strong>Couldn’t load the graph</strong>
@@ -564,6 +581,7 @@ export default function App() {
             <button className="refresh-button" type="button" onClick={refresh}>Retry</button>
           </div>
         )}
+        {knowledge && <Knowledge />}
       </main>
     </div>
   )

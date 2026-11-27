@@ -12,7 +12,7 @@ Phase 1A is a development and testing dashboard for one trusted operator on a lo
 
 ## Run the dashboard
 
-From the repository root, use Python 3.10 or later and Node.js 20.19+ on the 20.x line or 22.12+. The demo runs locally without a database server or credentials.
+From the repository root, use Python 3.10 or later and Node.js 20.19+ on the 20.x line or 22.12+. The Graph demo runs locally without a database server or credentials.
 
 ### Linux and macOS
 
@@ -66,6 +66,93 @@ For the demo Suspicious Chain, start at the Research Agent's read and follow the
 
 Type into **Search graph records** and use **Search category** to narrow results to AI agents, resources, actions, finding types, or interactions. Search by an agent or resource name or ID, an action, a finding category or rule ID, or an interaction ID. Select a result to focus the corresponding graph record or finding. Press **Enter** to select the first result, or **Escape** to dismiss results.
 
+## Phase 1B local Knowledge workflow
+
+Knowledge records a verified synthetic incident, derives a versioned advisory about the observed pattern, and tracks its review in local SQLite. The server recognizes the bundled synthetic snapshot by its pinned SHA-256 digest and validates the finding against that snapshot through a read-only Relate connection. `VARKHARD_DB_PATH` selects the Graph dashboard's snapshot. Knowledge uses the pinned bundle for its candidate evidence.
+
+The existing Graph demo remains unauthenticated. The `/api/knowledge` routes require a configured, authenticated identity and use its server-assigned tenant and role for every request. Phase 1B shares the trusted local and loopback-only support boundary. Use the bundled synthetic data and keep the SQLite database and identities file under the local account's control. Filesystem permissions govern direct access to these files.
+
+### Set up Knowledge on Windows
+
+Complete the PowerShell installation and frontend build above. In a private PowerShell terminal at the repository root, generate one analyst and one reviewer in the same demo tenant. The script refuses to overwrite an existing identity file. It saves token hashes to a Git-ignored file and captures the tokens in this shell's variables.
+
+```powershell
+$env:VARKHARD_LOCAL_IDENTITIES = 'data/local-knowledge-identities.json'
+$initializeIdentities = @'
+import hashlib
+import json
+import os
+import secrets
+from pathlib import Path
+
+path = Path(os.environ["VARKHARD_LOCAL_IDENTITIES"])
+path.parent.mkdir(parents=True, exist_ok=True)
+roles = ("analyst", "reviewer")
+tokens = [secrets.token_urlsafe(32) for role in roles]
+records = [
+    {
+        "actor_id": f"demo-{role}",
+        "tenant_id": "demo-team",
+        "role": role,
+        "token_sha256": hashlib.sha256(token.encode("ascii")).hexdigest(),
+    }
+    for role, token in zip(roles, tokens)
+]
+with path.open("x", encoding="utf-8") as file:
+    json.dump(records, file, indent=2)
+for token in tokens:
+    print(token)
+'@
+$analystToken, $reviewerToken = $initializeIdentities | & .\.venv\Scripts\python.exe -
+if ($LASTEXITCODE -ne 0) { throw 'Local identities setup failed.' }
+```
+
+Keep this terminal for the two tokens. Start FastAPI in a second PowerShell terminal at the repository root with the two Phase 1B paths set. Stop any earlier FastAPI process on port `8010` first.
+
+```powershell
+$env:VARKHARD_KNOWLEDGE_DB = 'data/knowledge.sqlite3'
+$env:VARKHARD_LOCAL_IDENTITIES = 'data/local-knowledge-identities.json'
+& .\.venv\Scripts\python.exe -m uvicorn varkhard.api:app --host 127.0.0.1 --port 8010 --no-access-log
+```
+
+On Linux and macOS, export the same variables and start the loopback server with `--no-access-log`. The identity file is a JSON array whose entries contain `actor_id`, `tenant_id`, `role` (`analyst` or `reviewer`), and the hexadecimal SHA-256 `token_sha256` of an independently generated `secrets.token_urlsafe(32)` token. Keep plaintext tokens in shell variables or enter them directly into the Knowledge sign-in field.
+
+### Register and review the demo incident
+
+1. Open **Knowledge** in the dashboard. In the private setup terminal, enter `$analystToken` to display its value. Paste that value into **Knowledge access token** and select **Connect**. Choose the verified **Suspicious Chain** candidate to register the incident, then create its advisory draft.
+2. Check the draft's evidence classification, claim limits, and version digest. Submit the version for review.
+3. Select **Disconnect**, then connect with `$reviewerToken` from the same demo tenant. Review the submitted version and approve or reject it. The server requires the reviewer to be a different actor from the author.
+4. Reconnect as the analyst to start a new draft from the latest approved or rejected version. Earlier versions and their review decisions remain in the advisory history.
+
+The browser holds the bearer token in memory for the active page. Reloading requires entering a token again. A review decision applies to the local advisory version. Establishing intent, impact, or effectiveness requires separate evidence.
+
+An advisory has a minimized envelope with its knowledge ID and version, schema and pattern versions, evidence classification, claim limits, and a validation-suite identifier. Private incident references and accounting fields are outside that envelope. The digest is lowercase SHA-256 over sorted, compact UTF-8 JSON of the envelope with the digest field excluded. The validation-suite identifier is recorded for future evaluation. The workflow ends at local review and stores version transitions and audit events in SQLite. The application audit is append-only. Its integrity depends on control of the host files.
+
+### Knowledge API
+
+Use `Authorization: Bearer <token>` for every route under `/api/knowledge`. The server reads credentials only from that header. Leaving both local paths unset leaves Knowledge inaccessible. Incomplete path configuration or an invalid identity registry prevents startup.
+
+| Route under `/api/knowledge` | Purpose |
+| --- | --- |
+| `GET /session` | Return the authenticated actor, tenant, and role. |
+| `GET /candidates` | List the validated synthetic evidence candidates. |
+| `GET /incidents` | List the tenant's incident records. |
+| `POST /incidents` | Register a candidate using `snapshot_id` and `finding_id` from the candidate list. |
+| `GET /advisories` | List the tenant's advisories. |
+| `POST /advisories` | Create an advisory draft using `incident_id`. |
+| `GET /advisories/{id}/versions/{version}` | Read a specific advisory version in the tenant. |
+| `POST /advisories/{id}/versions` | Open a new version using the latest finalized `version` and its `digest`. |
+| `POST /advisories/{id}/versions/{version}/submit` | Submit a draft for review using its `digest`. |
+| `POST /advisories/{id}/versions/{version}/approve` | Approve a submitted version as a reviewer using its `digest`. |
+| `POST /advisories/{id}/versions/{version}/reject` | Reject a submitted version as a reviewer using its `digest`. |
+
+From the token-generation terminal, verify the active analyst session with the following request.
+
+```powershell
+Invoke-RestMethod -Uri 'http://127.0.0.1:8010/api/knowledge/session' `
+    -Headers @{ Authorization = "Bearer $analystToken" }
+```
+
 ## CLI and tests
 
 The CLI opens the bundled snapshot in read-only mode and prints the three findings as JSON. You can also recreate the graph at the default CLI path.
@@ -100,6 +187,8 @@ python tests/browser/dashboard_smoke.py
 ```
 
 Use `--base-url` for another server address, `--browser-executable` for an existing Chromium installation, or `--screenshots` followed by a directory to save desktop and mobile captures. On Windows, the same commands can use `& .\.venv\Scripts\python.exe` in place of `python`.
+
+After building the frontend, run `python tests/browser/knowledge_smoke.py` for the Knowledge workflow. It launches a separate loopback server with temporary identities and a temporary SQLite database.
 
 ## Dashboard API
 
@@ -179,6 +268,7 @@ The automated tests use temporary Relate files and exercise persistence after cl
 | `varkhard/store.py`, `varkhard/models.py`, `varkhard/detection.py` | Relate storage, graph records, and security detection rules. |
 | `varkhard/api.py`, `varkhard/dashboard.py` | FastAPI routes and JSON projection of the graph and findings. |
 | `varkhard/investigation.py` | Evidence validation and deterministic construction of investigation traces. |
+| `varkhard/knowledge_*.py` | Local Knowledge identity, evidence provenance, and advisory workflow. |
 | `frontend/` | React and TypeScript dashboard, graph visualization, and Vite build. |
 | `tests/` | Storage, detection, investigation, CLI, API, and optional browser tests. |
 
