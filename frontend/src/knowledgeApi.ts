@@ -3,7 +3,7 @@ import type { Interaction, RuleId } from './api'
 export interface KnowledgeSession {
   actor_id: string
   tenant_id: string
-  role: 'analyst' | 'reviewer'
+  role: 'analyst' | 'reviewer' | 'publisher' | 'validator'
 }
 
 export interface KnowledgeCandidate {
@@ -44,7 +44,11 @@ export interface KnowledgeAdvisory {
 
 export type KnowledgeRequest = <Result>(path: string, body?: Record<string, string | number>) => Promise<Result>
 
-export class KnowledgeRequestError extends Error {}
+export class KnowledgeRequestError extends Error {
+  constructor(message: string, readonly status?: number) {
+    super(message)
+  }
+}
 
 function errorMessage(status: number) {
   if (status === 401 || status === 403) return 'Knowledge access was denied. Connect with an authorized token.'
@@ -67,7 +71,7 @@ export function knowledgeRequest(token: string, signal: AbortSignal): KnowledgeR
       },
       body: body && JSON.stringify(body),
     })
-    if (!response.ok) throw new KnowledgeRequestError(errorMessage(response.status))
+    if (!response.ok) throw new KnowledgeRequestError(errorMessage(response.status), response.status)
     return response.json() as Promise<Result>
   }
 }

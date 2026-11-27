@@ -14,7 +14,6 @@ from uuid import uuid4
 
 from .knowledge_evidence import RULE_ID, RULE_VERSION, SNAPSHOT_ID
 
-_VALIDATION_SUITE = "synthetic-suspicious-chain-v1"
 _OBSERVED_ACTIONS = ("read", "handoff", "export")
 _TRANSITIONS = {
     "submit": ("draft", "in_review"),
@@ -136,13 +135,15 @@ def _digest(payload: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _advisory_payload(knowledge_id: str, version: int) -> dict[str, Any]:
+def _schema_1_payload(knowledge_id: str, version: int) -> dict[str, Any]:
+    # These values are part of the original persisted format. Keep them independent
+    # of the current authoring template and the current versions of detection rules.
     return {
         "knowledge_id": knowledge_id,
         "version": version,
         "schema_version": 1,
-        "pattern_id": RULE_ID,
-        "pattern_version": RULE_VERSION,
+        "pattern_id": "suspicious_chain",
+        "pattern_version": 1,
         "evidence_classification": "synthetic",
         "root_cause_status": "not_established",
         "limitations": [
@@ -150,13 +151,18 @@ def _advisory_payload(knowledge_id: str, version: int) -> dict[str, Any]:
             "Root cause remains undetermined.",
             "Protection remains unverified.",
         ],
-        "validation_suite_id": _VALIDATION_SUITE,
+        "validation_suite_id": "synthetic-suspicious-chain-v1",
     }
 
 
+def _advisory_payload(knowledge_id: str, version: int) -> dict[str, Any]:
+    return _schema_1_payload(knowledge_id, version)
+
+
 def _stored_advisory(row: sqlite3.Row) -> dict[str, Any]:
-    # The MVP supports only the fixed schema-1 envelope. Check its contents as well as its digest.
-    payload = _advisory_payload(row["knowledge_id"], row["version"])
+    # Verify against the original schema reader. Add a separate reader for each
+    # future schema while continuing to recognize these exact schema-1 bytes.
+    payload = _schema_1_payload(row["knowledge_id"], row["version"])
     canonical = _canonical_json(payload)
     if row["advisory_json"] != canonical or row["digest"] != _digest(canonical):
         raise KnowledgeError(503, "The stored advisory could not be verified.")

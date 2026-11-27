@@ -9,6 +9,7 @@ import type { Dashboard, Finding, GraphEdge, GraphNode, Investigation } from './
 import { IntelligenceGraph } from './IntelligenceGraph'
 import type { GraphFocus } from './IntelligenceGraph'
 import { Inspector } from './Inspector'
+import { Community } from './Community'
 import { Knowledge } from './Knowledge'
 import { RecordSearch } from './RecordSearch'
 
@@ -17,6 +18,7 @@ const navigation = [
   { id: 'graph', label: 'Intelligence Graph' },
   { id: 'findings', label: 'Findings' },
   { id: 'knowledge', label: 'Knowledge' },
+  { id: 'community', label: 'Community' },
 ]
 
 const legend = [
@@ -37,6 +39,10 @@ function sectionFromHash() {
   const hash = window.location.hash.slice(1)
   if (hash === 'investigation-tools') return 'graph'
   return navigation.find(({ id }) => id === hash)?.id ?? (hash === 'inspector' ? 'findings' : 'overview')
+}
+
+function isPrivateSection(section: string) {
+  return section === 'knowledge' || section === 'community'
 }
 
 function supportingEdge(edge: GraphEdge, node: GraphNode, neighbors: Set<string>) {
@@ -439,8 +445,8 @@ export default function App() {
   const expandButton = useRef<HTMLButtonElement>(null)
   const returnScroll = useRef<number | null>(null)
   const navigationTarget = useRef<string | null>(null)
-  const wasKnowledge = useRef(false)
-  const knowledge = activeSection === 'knowledge'
+  const wasPrivateSection = useRef(false)
+  const privateSection = isPrivateSection(activeSection)
 
   function changeExpanded(next: boolean) {
     if (next) returnScroll.current = window.scrollY
@@ -478,7 +484,7 @@ export default function App() {
   useEffect(() => {
     const updateSection = () => {
       const section = sectionFromHash()
-      if (section === 'knowledge') setExpanded(false)
+      if (isPrivateSection(section)) setExpanded(false)
       setActiveSection(section)
     }
     window.addEventListener('hashchange', updateSection)
@@ -486,11 +492,11 @@ export default function App() {
   }, [])
 
   useLayoutEffect(() => {
-    if (knowledge || wasKnowledge.current) {
+    if (isPrivateSection(activeSection) || wasPrivateSection.current) {
       document.getElementById(window.location.hash.slice(1) || 'overview')?.scrollIntoView()
     }
-    wasKnowledge.current = knowledge
-  }, [knowledge])
+    wasPrivateSection.current = isPrivateSection(activeSection)
+  }, [activeSection])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -522,7 +528,9 @@ export default function App() {
   const sourceStatus = request.status === 'loaded'
     ? (request.data.source.read_only ? 'Read-only' : 'Connected')
     : request.status === 'loading' ? 'Loading' : 'Unavailable'
-  const availableSections = request.status === 'loaded' ? navigation : navigation.filter(({ id }) => id === 'overview' || id === 'knowledge')
+  const availableSections = request.status === 'loaded'
+    ? navigation
+    : navigation.filter(({ id }) => id === 'overview' || isPrivateSection(id))
   const currentSection = expanded ? 'graph' : activeSection
 
   function navigateFromWorkspace(id: string, event: MouseEvent<HTMLAnchorElement>) {
@@ -547,7 +555,7 @@ export default function App() {
                 onClick={(event) => navigateFromWorkspace(id, event)}>{label}</a>
             ))}
           </nav>
-          {!knowledge && <div className="header-actions">
+          {!privateSection && <div className="header-actions">
             <span className="source-status" data-status={request.status} title={`Relate · ${sourceStatus}`}>
               <span className="source-dot" aria-hidden="true" />
               <span>Relate</span>
@@ -562,18 +570,18 @@ export default function App() {
       </header>
 
       <main id="main" className="main-content" tabIndex={-1}>
-        <Overview data={request.status === 'loaded' ? request.data : undefined} hidden={expanded || knowledge} />
+        <Overview data={request.status === 'loaded' ? request.data : undefined} hidden={expanded || privateSection} />
 
         {request.status === 'loaded' && (
-          <DashboardContent data={request.data} expanded={expanded} hidden={knowledge}
+          <DashboardContent data={request.data} expanded={expanded} hidden={privateSection}
             onExpandedChange={changeExpanded} expandButton={expandButton} />
         )}
-        {!knowledge && request.status === 'loading' && (
+        {!privateSection && request.status === 'loading' && (
           <div className="panel request-state" role="status">
             <LoaderCircle className="spinner" size={22} aria-hidden="true" /> Loading graph from Relate…
           </div>
         )}
-        {!knowledge && request.status === 'error' && (
+        {!privateSection && request.status === 'error' && (
           <div className="panel request-state" role="alert">
             <TriangleAlert size={24} aria-hidden="true" />
             <strong>Couldn’t load the graph</strong>
@@ -581,7 +589,8 @@ export default function App() {
             <button className="refresh-button" type="button" onClick={refresh}>Retry</button>
           </div>
         )}
-        {knowledge && <Knowledge />}
+        {activeSection === 'knowledge' && <Knowledge />}
+        {activeSection === 'community' && <Community />}
       </main>
     </div>
   )

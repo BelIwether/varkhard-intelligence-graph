@@ -13,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from .community_api import create_community_router
 from .knowledge_evidence import EvidenceCatalog, EvidenceUnavailable
 from .knowledge_store import KnowledgeError, KnowledgeStore
 
@@ -33,8 +34,9 @@ class _StrictModel(BaseModel):
 class _Identity(_StrictModel):
     actor_id: _ACTOR_ID
     tenant_id: _ACTOR_ID
-    role: Literal["analyst", "reviewer"]
+    role: Literal["analyst", "reviewer", "publisher", "validator"]
     token_sha256: _DIGEST
+    community_recipients: list[_ACTOR_ID] = Field(default_factory=list, max_length=64)
 
 
 class _RegisterIncident(_StrictModel):
@@ -62,8 +64,17 @@ def _load_identities(path: Path) -> list[tuple[bytes, _Identity]]:
             raise ValueError
         entries = TypeAdapter(list[_Identity]).validate_json(body)
         hashes = {entry.token_sha256 for entry in entries}
-        if not entries or len(hashes) != len(entries):
+        publishers = [(entry.tenant_id, entry.actor_id) for entry in entries if entry.role == "publisher"]
+        validators = {entry.tenant_id for entry in entries if entry.role == "validator"}
+        if not entries or len(hashes) != len(entries) or len(set(publishers)) != len(publishers):
             raise ValueError
+        for entry in entries:
+            recipients = set(entry.community_recipients)
+            if recipients and (
+                entry.role != "publisher" or entry.tenant_id in recipients
+                or len(recipients) != len(entry.community_recipients) or not recipients <= validators
+            ):
+                raise ValueError
     except (OSError, ValueError):
         raise RuntimeError("Could not load the local Knowledge identity registry.") from None
     return [(bytes.fromhex(entry.token_sha256), entry) for entry in entries]
@@ -93,8 +104,16 @@ def _analyst(request: Request) -> _Identity:
     return actor
 
 
+def _knowledge_reader(request: Request) -> _Identity:
+    actor = _authenticated_actor(request)
+    if actor.role not in ("analyst", "reviewer"):
+        raise HTTPException(403, "Analyst or reviewer permission required.")
+    return actor
+
+
 _Actor = Annotated[_Identity, Depends(_authenticated_actor)]
 _Analyst = Annotated[_Identity, Depends(_analyst)]
+_KnowledgeReader = Annotated[_Identity, Depends(_knowledge_reader)]
 
 
 def create_knowledge_app(
@@ -138,16 +157,18 @@ def create_knowledge_app(
     if store is None:
         return app
 
+    app.include_router(create_community_router(store, tuple(entry for _, entry in identities), _authenticated_actor))
+
     @app.get("/session")
     def session(actor: _Actor):
         return {"actor_id": actor.actor_id, "tenant_id": actor.tenant_id, "role": actor.role}
 
     @app.get("/candidates")
-    def candidates(_actor: _Actor):
+    def candidates(_actor: _KnowledgeReader):
         return evidence.candidates()
 
     @app.get("/incidents")
-    def incidents(actor: _Actor):
+    def incidents(actor: _KnowledgeReader):
         return store.list_incidents(actor.tenant_id)
 
     @app.post("/incidents", status_code=201)
@@ -158,7 +179,7 @@ def create_knowledge_app(
         return store.register_incident(actor.tenant_id, actor.actor_id, incident)
 
     @app.get("/advisories")
-    def advisories(actor: _Actor):
+    def advisories(actor: _KnowledgeReader):
         return store.list_advisories(actor.tenant_id)
 
     @app.post("/advisories", status_code=201)
@@ -166,7 +187,7 @@ def create_knowledge_app(
         return store.create_advisory(actor.tenant_id, actor.actor_id, data.incident_id)
 
     @app.get("/advisories/{knowledge_id}/versions/{version}")
-    def advisory(knowledge_id: _ROUTE_ID, version: _ROUTE_VERSION, actor: _Actor):
+    def advisory(knowledge_id: _ROUTE_ID, version: _ROUTE_VERSION, actor: _KnowledgeReader):
         return store.get_advisory(actor.tenant_id, knowledge_id, version)
 
     @app.post("/advisories/{knowledge_id}/versions", status_code=201)

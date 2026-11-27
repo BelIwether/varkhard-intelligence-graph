@@ -10,6 +10,7 @@ type AdvisoryVersion = Pick<KnowledgeAdvisory, 'id' | 'version'>
 type Library = {
   session: KnowledgeSession
   candidates: KnowledgeCandidate[]
+  candidatesUnavailable: boolean
   incidents: KnowledgeIncident[]
   advisories: KnowledgeAdvisory[]
   selected?: KnowledgeAdvisory
@@ -47,16 +48,22 @@ function versionPath({ id, version }: AdvisoryVersion) {
 
 async function loadLibrary(request: KnowledgeRequest, selected?: AdvisoryVersion, previous?: KnowledgeSession): Promise<Library> {
   const session = await request<KnowledgeSession>('session')
+  if (session.role !== 'analyst' && session.role !== 'reviewer') {
+    throw new KnowledgeRequestError('Use this identity in Community. Knowledge requires an analyst or reviewer token.')
+  }
   if (previous && (session.actor_id !== previous.actor_id || session.tenant_id !== previous.tenant_id || session.role !== previous.role)) {
     throw new KnowledgeRequestError('The Knowledge identity changed. Connect again to continue.')
   }
   const [candidates, incidents, advisories, preview] = await Promise.all([
-    request<KnowledgeCandidate[]>('candidates'),
+    request<KnowledgeCandidate[]>('candidates').catch((error: unknown) => {
+      if (error instanceof KnowledgeRequestError && error.status === 503) return undefined
+      throw error
+    }),
     request<KnowledgeIncident[]>('incidents'),
     request<KnowledgeAdvisory[]>('advisories'),
     selected ? request<KnowledgeAdvisory>(versionPath(selected)) : undefined,
   ])
-  return { session, candidates, incidents, advisories, selected: preview }
+  return { session, candidates: candidates ?? [], candidatesUnavailable: candidates === undefined, incidents, advisories, selected: preview }
 }
 
 function IncidentCard({ incident, canDraft, pending, onDraft }: {
@@ -307,7 +314,9 @@ export function Knowledge() {
                     )}
                   </article>
                 )
-              }) : <p>No finding candidates.</p>}
+              }) : library.candidatesUnavailable ? (
+                <p role="status">Finding candidates are temporarily unavailable.</p>
+              ) : <p>No finding candidates.</p>}
             </section>
             <section className="panel knowledge-panel" aria-labelledby="knowledge-incidents-title">
               <h2 id="knowledge-incidents-title">Incidents</h2>

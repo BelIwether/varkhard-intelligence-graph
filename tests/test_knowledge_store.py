@@ -9,6 +9,7 @@ from threading import Barrier
 
 import pytest
 
+from varkhard import knowledge_store
 from varkhard.knowledge_store import KnowledgeError, KnowledgeStore
 
 
@@ -76,6 +77,25 @@ def test_versions_preserve_the_envelope_and_record_exact_review_history(tmp_path
     reopened = KnowledgeStore(path)
     assert reopened.list_advisories("tenant-a") == [subsequent]
     assert reopened.get_advisory("tenant-a", knowledge_id, 1) == {**approved, "latest_version": 2}
+
+
+def test_schema_1_approval_survives_a_later_authoring_template(tmp_path, monkeypatch):
+    path = tmp_path / "knowledge.sqlite3"
+    store = KnowledgeStore(path)
+    draft = _draft(store)
+    version = ("tenant-a", draft["id"], 1)
+    digest = draft["advisory"]["digest"]
+    store.transition(version[0], "analyst", *version[1:], digest, "submit")
+    approved = store.transition(version[0], "reviewer", *version[1:], digest, "approve")
+
+    def future_template(knowledge_id, version):
+        return {"knowledge_id": knowledge_id, "version": version, "schema_version": 2}
+
+    monkeypatch.setattr(knowledge_store, "_advisory_payload", future_template)
+    monkeypatch.setattr(knowledge_store, "RULE_VERSION", 2)
+    reopened = KnowledgeStore(path)
+    assert reopened.get_advisory(*version) == approved
+    assert reopened.list_advisories(version[0]) == [approved]
 
 
 def test_store_enforces_tenant_author_digest_and_state_boundaries(tmp_path):

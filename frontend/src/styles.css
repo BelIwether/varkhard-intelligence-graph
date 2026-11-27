@@ -561,6 +561,9 @@ ul { padding: 0; list-style: none; }
 @media (max-width: 360px) {
   .site-header-inner { column-gap: 5px; }
   .brand { letter-spacing: .09em; }
+  .top-navigation { justify-content: space-between; gap: 4px; }
+  .top-navigation a { font-size: 11px; }
+  .top-navigation a[href='#graph'] { max-width: 70px; text-align: center; white-space: normal; }
   .header-actions { gap: 5px; }
   .source-status { display: grid; grid-template-columns: auto auto; gap: 0 4px; line-height: 1.15; }
   .source-dot { grid-row: 1 / 3; }

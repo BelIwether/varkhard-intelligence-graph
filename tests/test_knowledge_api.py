@@ -9,6 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient, Response
 
 from varkhard.api import create_app
+from varkhard.knowledge_evidence import EvidenceCatalog
 from varkhard.models import Agent, Interaction, Resource
 from varkhard.store import GraphStore
 
@@ -221,8 +222,6 @@ async def test_registration_uses_server_validated_finding_and_observed_outcome(k
 
 
 async def test_envelope_contains_only_deterministic_advisory_fields(tmp_path, credentials, caplog):
-    from varkhard.knowledge_evidence import EvidenceCatalog
-
     identities, tokens = credentials
     synthetic = tmp_path / "custom-synthetic.rl"
     canary = "PRIVATE_GRAPH_CANARY_794E"
@@ -258,6 +257,23 @@ async def test_envelope_contains_only_deterministic_advisory_fields(tmp_path, cr
         assert canary not in json.dumps(persisted["advisory"])
     assert canary not in caplog.text
     assert synthetic.read_bytes() == original
+
+
+async def test_persisted_review_is_available_during_candidate_outage(tmp_path, credentials):
+    identities, tokens = credentials
+    settings = {"knowledge_db": tmp_path / "knowledge.sqlite3", "knowledge_identities": identities}
+    async with _client(create_app(**settings)) as client:
+        draft = await _draft(client, tokens["analyst"])
+        submitted = _json(await _transition(client, tokens["analyst"], draft, "submit"), 200)
+
+    missing = EvidenceCatalog(tmp_path / "unavailable.rl", "0" * 64)
+    reviewer = _bearer(tokens["reviewer"])
+    async with _client(create_app(**settings, knowledge_evidence=missing)) as client:
+        _json(await client.get(f"{_BASE}/candidates", headers=reviewer), 503)
+        assert _json(await client.get(f"{_BASE}/advisories", headers=reviewer), 200) == [submitted]
+        assert _json(await client.get(_version_url(draft), headers=reviewer), 200) == submitted
+        approved = _json(await _transition(client, tokens["reviewer"], submitted, "approve"), 200)
+        assert approved["advisory"] == draft["advisory"]
 
 
 async def test_cross_tenant_lists_reads_and_mutations_are_isolated(knowledge):
