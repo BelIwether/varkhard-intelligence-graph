@@ -162,12 +162,15 @@ def wait_for_refit(page: Page, previous_zoom: float) -> None:
 def check_header(page: Page) -> None:
     header = page.get_by_role("banner")
     navigation = header.get_by_role("navigation", name="Primary navigation")
-    expect(navigation.get_by_role("link")).to_have_text(["Overview", "Intelligence Graph", "Findings", "Knowledge"])
+    expect(navigation.get_by_role("link")).to_have_text(
+        ["Overview", "Intelligence Graph", "Findings", "Knowledge", "Community"],
+    )
     expect(header.get_by_text("Relate", exact=True)).to_be_visible()
     expect(exact_button(header, "Refresh")).to_be_visible()
-    for name in ("Overview", "Intelligence Graph", "Findings"):
+    for name in ("Knowledge", "Community", "Overview", "Intelligence Graph", "Findings"):
         link = navigation.get_by_role("link", name=name, exact=True)
         target = link.evaluate("element => element.hash")
+        expect(link).to_be_in_viewport(ratio=1)
         link.click()
         expect(page).to_have_url(re.compile(re.escape(target) + "$"))
         expect(page.locator(target)).to_be_visible()
@@ -723,6 +726,24 @@ def check_mobile(browser: Browser, url: str, width: int, finding: dict, screensh
     print(f"Verified navigation, touch zoom, evidence steps and Focus Mode without overflow at {width}px.")
 
 
+def check_navigation_widths(browser: Browser, url: str) -> None:
+    for width in (375, 768):
+        page = browser.new_page(
+            viewport={"width": width, "height": 844},
+            is_mobile=True,
+            has_touch=True,
+            reduced_motion="reduce",
+        )
+        page.goto(f"{url}/")
+        expect(page.get_by_role("region", name=GRAPH_NAME)).to_be_visible()
+        page.evaluate("document.fonts.ready")
+        check_header(page)
+        widths = page.evaluate("() => [window.innerWidth, document.documentElement.scrollWidth]")
+        assert widths == [width, width], (width, widths)
+        page.close()
+    print("Verified all five navigation links fit and work at 375px and 768px.")
+
+
 def check_short_viewport(
     browser: Browser, url: str, width: int, height: int, finding: dict, screenshots: Path | None,
 ) -> None:
@@ -992,6 +1013,7 @@ def main() -> None:
         chain = next(finding for finding in data["findings"] if finding["rule_id"] == "suspicious_chain")
         for width in (390, 320):
             check_mobile(browser, url, width, chain, args.screenshots)
+        check_navigation_widths(browser, url)
         for width, height in ((320, 568), (667, 375)):
             check_short_viewport(browser, url, width, height, chain, args.screenshots)
         check_partial_trace(browser, url, data)

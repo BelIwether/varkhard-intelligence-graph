@@ -6,9 +6,9 @@ VARKHARD Intelligence Graph traces AI agent access and explains security finding
 
 Security reviewers can see which agent acted on a resource, which permissions applied, and which interactions are linked in the graph. The dashboard reads a synthetic snapshot with five fictional agents and four fictional resources, including an external outbox represented by a graph node. The embedded snapshot shows recorded activity and rules evaluated against that data.
 
-## Phase 1A support boundary
+## Local support boundary
 
-Phase 1A is a development and testing dashboard for one trusted operator on a local machine. Use synthetic or non-customer test data under your control. The dashboard API serves graph records without authentication. Keep FastAPI and Vite bound to `127.0.0.1`, with port forwarding, public tunnels, and external proxy routes disabled. Production and multi-tenant deployments are outside this support boundary.
+VARKHARD runs on a local machine under a trusted operator. The Graph dashboard API serves records without authentication. Use synthetic data under your control and keep FastAPI and Vite bound to `127.0.0.1`, with port forwarding, public tunnels, and external proxy routes disabled. Community simulates independent tenants with authenticated identities and tenant-scoped records inside the same local process and host. Production deployments and remote peers are outside the supported environment.
 
 ## Run the dashboard
 
@@ -72,12 +72,12 @@ Knowledge records a verified synthetic incident, derives a versioned advisory ab
 
 The existing Graph demo remains unauthenticated. The `/api/knowledge` routes require a configured, authenticated identity and use its server-assigned tenant and role for every request. Phase 1B shares the trusted local and loopback-only support boundary. Use the bundled synthetic data and keep the SQLite database and identities file under the local account's control. Filesystem permissions govern direct access to these files.
 
-### Set up Knowledge on Windows
+### Set up Knowledge and Community on Windows
 
-Complete the PowerShell installation and frontend build above. In a private PowerShell terminal at the repository root, generate one analyst and one reviewer in the same demo tenant. The script refuses to overwrite an existing identity file. It saves token hashes to a Git-ignored file and captures the tokens in this shell's variables.
+Complete the PowerShell installation and frontend build above. In a private PowerShell terminal at the repository root, generate four identities. Tenant A has an analyst, a distinct reviewer, and a publisher. Tenant B has a validator. The script creates a separate, Git-ignored Community registry and refuses to overwrite it. It writes token hashes to disk and captures the plaintext tokens in shell variables.
 
 ```powershell
-$env:VARKHARD_LOCAL_IDENTITIES = 'data/local-knowledge-identities.json'
+$env:VARKHARD_LOCAL_IDENTITIES = 'data/local-community-identities.json'
 $initializeIdentities = @'
 import hashlib
 import json
@@ -87,35 +87,41 @@ from pathlib import Path
 
 path = Path(os.environ["VARKHARD_LOCAL_IDENTITIES"])
 path.parent.mkdir(parents=True, exist_ok=True)
-roles = ("analyst", "reviewer")
-tokens = [secrets.token_urlsafe(32) for role in roles]
+actors = (
+    ("a-analyst", "tenant-a", "analyst"),
+    ("a-reviewer", "tenant-a", "reviewer"),
+    ("a-publisher", "tenant-a", "publisher"),
+    ("b-validator", "tenant-b", "validator"),
+)
+tokens = [secrets.token_urlsafe(32) for actor in actors]
 records = [
     {
-        "actor_id": f"demo-{role}",
-        "tenant_id": "demo-team",
+        "actor_id": actor_id,
+        "tenant_id": tenant_id,
         "role": role,
         "token_sha256": hashlib.sha256(token.encode("ascii")).hexdigest(),
     }
-    for role, token in zip(roles, tokens)
+    for (actor_id, tenant_id, role), token in zip(actors, tokens)
 ]
+records[2]["community_recipients"] = ["tenant-b"]
 with path.open("x", encoding="utf-8") as file:
     json.dump(records, file, indent=2)
 for token in tokens:
     print(token)
 '@
-$analystToken, $reviewerToken = $initializeIdentities | & .\.venv\Scripts\python.exe -
+$analystToken, $reviewerToken, $publisherToken, $validatorToken = $initializeIdentities | & .\.venv\Scripts\python.exe -
 if ($LASTEXITCODE -ne 0) { throw 'Local identities setup failed.' }
 ```
 
-Keep this terminal for the two tokens. Start FastAPI in a second PowerShell terminal at the repository root with the two Phase 1B paths set. Stop any earlier FastAPI process on port `8010` first.
+Keep this terminal for the tokens. Start FastAPI in a second PowerShell terminal at the repository root. Stop any earlier FastAPI process on port `8010` first.
 
 ```powershell
-$env:VARKHARD_KNOWLEDGE_DB = 'data/knowledge.sqlite3'
-$env:VARKHARD_LOCAL_IDENTITIES = 'data/local-knowledge-identities.json'
+$env:VARKHARD_KNOWLEDGE_DB = 'data/community-demo.sqlite3'
+$env:VARKHARD_LOCAL_IDENTITIES = 'data/local-community-identities.json'
 & .\.venv\Scripts\python.exe -m uvicorn varkhard.api:app --host 127.0.0.1 --port 8010 --no-access-log
 ```
 
-On Linux and macOS, export the same variables and start the loopback server with `--no-access-log`. The identity file is a JSON array whose entries contain `actor_id`, `tenant_id`, `role` (`analyst` or `reviewer`), and the hexadecimal SHA-256 `token_sha256` of an independently generated `secrets.token_urlsafe(32)` token. Keep plaintext tokens in shell variables or enter them directly into the Knowledge sign-in field.
+On Linux and macOS, export the same paths and start the loopback server with `--no-access-log`. The identity file is a JSON array whose entries contain `actor_id`, `tenant_id`, `role`, and the hexadecimal SHA-256 `token_sha256` of an independently generated `secrets.token_urlsafe(32)` token. A publisher's `community_recipients` lists the tenant IDs that publisher may address. Each recipient must have a validator identity. The server loads the registry on startup. Keep plaintext tokens in shell variables or enter them directly into the sign-in field. Existing Phase 1B registries can still be used for Knowledge.
 
 ### Register and review the demo incident
 
@@ -126,7 +132,7 @@ On Linux and macOS, export the same variables and start the loopback server with
 
 The browser holds the bearer token in memory for the active page. Reloading requires entering a token again. A review decision applies to the local advisory version. Establishing intent, impact, or effectiveness requires separate evidence.
 
-An advisory has a minimized envelope with its knowledge ID and version, schema and pattern versions, evidence classification, claim limits, and a validation-suite identifier. Private incident references and accounting fields are outside that envelope. The digest is lowercase SHA-256 over sorted, compact UTF-8 JSON of the envelope with the digest field excluded. The validation-suite identifier is recorded for future evaluation. The workflow ends at local review and stores version transitions and audit events in SQLite. The application audit is append-only. Its integrity depends on control of the host files.
+An advisory has a minimized envelope with its knowledge ID and version, schema and pattern versions, evidence classification, claim limits, and a validation-suite identifier. Private incident references and accounting fields stay in the tenant's Knowledge records. The digest is lowercase SHA-256 over sorted, compact UTF-8 JSON of the envelope with the digest field excluded. SQLite persists each immutable version and its review transitions. Stored schema-1 versions use their original schema and template when verified. If the candidate evidence snapshot is unavailable, previously stored incidents and advisories remain available for review. The application audit is append-only. Its integrity depends on control of the host files.
 
 ### Knowledge API
 
@@ -152,6 +158,50 @@ From the token-generation terminal, verify the active analyst session with the f
 Invoke-RestMethod -Uri 'http://127.0.0.1:8010/api/knowledge/session' `
     -Headers @{ Authorization = "Bearer $analystToken" }
 ```
+
+## Phase 1C local Community workflow
+
+Complete steps 1–3 of **Register and review the demo incident** first.
+
+1. Open **Community** and connect with `$publisherToken`. Select the approved advisory version, select `tenant-b`, and choose how long the delivery stays valid. Select **Send advisory**. **Delivery status** tracks the delivery and lets the publisher withdraw it.
+2. Disconnect and connect with `$validatorToken`. Find the delivery in the **Community Inbox** and select **Verify advisory**. A verified delivery displays the sanitized envelope and enables validation.
+3. Create a recipient-owned synthetic fixture with the positive, negative, or inconclusive scenario. Select a fixture for the delivery and select **Run validation**. Sending, receiving, and verifying an advisory leave validation idle.
+4. Inspect the recorded outcome and its limits. Select **Share feedback** to send the sanitized result summary. Disconnect and reconnect as the publisher to see the shared summary under **Feedback history**.
+
+### Delivery and validation security
+
+The publisher selects an exact approved version and digest. The server checks the publisher's identity and permitted audience, checks the distinct reviewer's approval for that version, and atomically records a pending delivery addressed to one tenant. Repeating the same version and audience returns the original delivery, including its original expiry and current status. Resending to the same tenant after expiry or withdrawal requires a newly approved version. The Inbox withholds the advisory body until the recipient explicitly verifies the local sender provenance, audience, version, digest, and validity. Expiry and withdrawal block future retrieval and validation on the server. A recipient can retain a copy of information viewed while the delivery was valid. A revoked audience makes an active delivery appear unavailable in both the Inbox and Outbox. An authenticated publisher from the sending tenant can still withdraw it. Status and previously recorded outcomes support local audit.
+
+The delivery carries the approved sanitized envelope and delivery metadata. Raw incident records, evidence, credentials, prompts, and customer data stay outside the exchange. The schema uses repository-defined fields and values. The validator selects one of their tenant's immutable synthetic fixtures and the server applies the repository-owned suite for the verified envelope. Feedback shows fixed result summaries in sharing order, while fixture details and validation provenance stay in the recipient's records. The audit records publication, verification, validation, feedback, withdrawal, and expiry transitions. Expiry is enforced by the clock and recorded when the delivery is next accessed. Inbox and Outbox lists use a read transaction and acquire the writer lock only when an expiry needs to be recorded.
+
+The result is **Pattern observed**, **Pattern not observed**, or **Inconclusive** for the selected fixture. Protection remains **unmeasured** in each case. The runs measure behavior on synthetic fixtures. Establishing real-world effectiveness or production protection would require separate evidence.
+
+The same local SQLite database stores the Community tables and existing Knowledge records. Startup adds the four Community tables to an existing Knowledge database. Local provenance relies on the trusted process, identity registry, immutable database records, and host clock. Remote peer transport and external trust authority are outside the simulation.
+
+| SQLite table | Data |
+| --- | --- |
+| `community_deliveries` | Immutable sender, recipient, expiry, sanitized envelope, and exact Knowledge version, digest, and approval reference. |
+| `community_fixtures` | Recipient-owned synthetic observations, fixture digest, scenario, and creation provenance. |
+| `community_validations` | Results linked to the delivery and immutable recipient fixture, with the recorded fixture digest and scenario, suite ID, and suite version. |
+| `community_audit` | Append-only delivery transitions and explicit feedback shares. |
+
+### Community API
+
+Send the same bearer header used by Knowledge.
+
+| Route under `/api/knowledge/community` | Role | Purpose |
+| --- | --- | --- |
+| `GET /peers` | Publisher | List the tenant IDs this publisher may address. |
+| `GET /approved` | Publisher | List approved advisories by ID, version, and digest. |
+| `GET /outbox` | Publisher | View outgoing delivery status and shared feedback. |
+| `POST /outbox` | Publisher | Deliver `knowledge_id`, `version`, and `digest` to `recipient_tenant`. The optional `ttl_hours` defaults to 24 and accepts 1–168 hours. |
+| `POST /outbox/{id}/withdraw` | Publisher | Withdraw an outgoing delivery. |
+| `GET /inbox` | Validator | View incoming delivery status, verified envelopes, results, and feedback. |
+| `POST /inbox/{id}/verify` | Validator | Verify the incoming delivery's provenance, content, audience, and validity. |
+| `GET /fixtures` | Validator | List the recipient tenant's synthetic fixtures. |
+| `POST /fixtures` | Validator | Create a fixture using a `scenario` of `positive`, `negative`, or `inconclusive`. |
+| `POST /inbox/{id}/validate` | Validator | Run the trusted suite explicitly with a tenant-owned `fixture_id`. |
+| `POST /inbox/{id}/feedback` | Validator | Share a sanitized summary for `validation_id` with the sender. |
 
 ## CLI and tests
 
@@ -188,7 +238,15 @@ python tests/browser/dashboard_smoke.py
 
 Use `--base-url` for another server address, `--browser-executable` for an existing Chromium installation, or `--screenshots` followed by a directory to save desktop and mobile captures. On Windows, the same commands can use `& .\.venv\Scripts\python.exe` in place of `python`.
 
-After building the frontend, run `python tests/browser/knowledge_smoke.py` for the Knowledge workflow. It launches a separate loopback server with temporary identities and a temporary SQLite database.
+After building the frontend, run `python tests/browser/knowledge_smoke.py` for the Knowledge workflow and `python tests/browser/community_smoke.py` for the two-tenant Community workflow. Each launches a separate loopback server with temporary identities and a temporary SQLite database.
+
+On Windows PowerShell, run the Community workflow test with the following commands.
+
+```powershell
+& .\.venv\Scripts\python.exe -m pip install playwright
+& .\.venv\Scripts\python.exe -m playwright install chromium
+& .\.venv\Scripts\python.exe tests/browser/community_smoke.py
+```
 
 ## Dashboard API
 
@@ -269,6 +327,7 @@ The automated tests use temporary Relate files and exercise persistence after cl
 | `varkhard/api.py`, `varkhard/dashboard.py` | FastAPI routes and JSON projection of the graph and findings. |
 | `varkhard/investigation.py` | Evidence validation and deterministic construction of investigation traces. |
 | `varkhard/knowledge_*.py` | Local Knowledge identity, evidence provenance, and advisory workflow. |
+| `varkhard/community_*.py` | Local Community delivery, provenance verification, and synthetic validation. |
 | `frontend/` | React and TypeScript dashboard, graph visualization, and Vite build. |
 | `tests/` | Storage, detection, investigation, CLI, API, and optional browser tests. |
 

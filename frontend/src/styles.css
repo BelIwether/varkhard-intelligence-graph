@@ -509,7 +509,7 @@ ul { padding: 0; list-style: none; }
   .graph-viewport { height: clamp(390px, 60svh, 530px); }
 }
 
-@media (max-width: 730px) {
+@media (max-width: 820px) {
   :root { --anchor-offset: 91px; }
   .site-header-inner { grid-template-columns: 1fr auto; gap: 0 8px; min-height: 0; padding-top: 6px; }
   .top-navigation { grid-row: 2; grid-column: 1 / -1; justify-content: center; }
@@ -558,9 +558,15 @@ ul { padding: 0; list-style: none; }
   .graph-viewport { height: clamp(350px, 56svh, 430px); }
 }
 
+@media (max-width: 390px) {
+  .top-navigation { justify-content: space-between; gap: 4px; }
+  .top-navigation a[href='#graph'] { text-align: center; white-space: normal; }
+}
+
 @media (max-width: 360px) {
   .site-header-inner { column-gap: 5px; }
   .brand { letter-spacing: .09em; }
+  .top-navigation a { font-size: 11px; }
   .header-actions { gap: 5px; }
   .source-status { display: grid; grid-template-columns: auto auto; gap: 0 4px; line-height: 1.15; }
   .source-dot { grid-row: 1 / 3; }

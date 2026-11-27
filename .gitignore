@@ -228,7 +228,8 @@ __marimo__/
 *.rl.*
 !/examples/synthetic-demo.rl
 
-# Local Knowledge Engine identities and SQLite state.
+# Local Knowledge and Community identities and SQLite state.
 /data/local-knowledge-identities.json
+/data/local-community-identities.json
 /data/*.sqlite3
 /data/*.sqlite3-*
