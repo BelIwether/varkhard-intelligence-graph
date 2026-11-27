@@ -192,19 +192,25 @@ class CommunityStore:
             raise KnowledgeError(404, "Community delivery not found.")
         return delivery
 
+    @staticmethod
+    def _observed_state(delivery: sqlite3.Row, events: list[sqlite3.Row], now: str) -> tuple[str, bool]:
+        """Return the status and whether its expiry still needs an audit event."""
+        actions = {event["action"] for event in events}
+        if "withdrawn" in actions:
+            return "withdrawn", False
+        if "expired" in actions or now >= delivery["expires_at"]:
+            return "expired", "expired" not in actions
+        return ("verified" if "verified" in actions else "unverified"), False
+
     def _state(
         self, connection: sqlite3.Connection, delivery: sqlite3.Row, now: str,
     ) -> tuple[str, list[sqlite3.Row]]:
         events = self._events(connection, delivery)
-        actions = {event["action"] for event in events}
-        if "withdrawn" in actions:
-            return "withdrawn", events
-        if "expired" in actions or now >= delivery["expires_at"]:
-            if "expired" not in actions:
-                self._audit(connection, delivery, delivery["sender_tenant"], "system", "expired", now)
-                events = self._events(connection, delivery)
-            return "expired", events
-        return ("verified" if "verified" in actions else "unverified"), events
+        status, record_expiry = self._observed_state(delivery, events, now)
+        if record_expiry:
+            self._audit(connection, delivery, delivery["sender_tenant"], "system", "expired", now)
+            events = self._events(connection, delivery)
+        return status, events
 
     def _verified_envelope(
         self, connection: sqlite3.Connection, delivery: sqlite3.Row, *, inbox: bool,
@@ -264,20 +270,40 @@ class CommunityStore:
 
     def deliveries(self, tenant: str, *, inbox: bool) -> list[dict[str, Any]]:
         scope = "recipient_tenant" if inbox else "sender_tenant"
-        with self.knowledge._transaction(write=True) as connection:
-            now = _timestamp()
-            deliveries = connection.execute(
-                f"SELECT * FROM community_deliveries WHERE {scope} = ? ORDER BY delivered_at, id", (tenant,),
-            ).fetchall()
-            views = []
-            for delivery in deliveries:
-                try:
-                    state = self._state(connection, delivery, now)
-                except KnowledgeError:
-                    # An invalid transport binding cannot establish the row's tenant scope.
-                    continue
-                views.append(self._view(connection, delivery, now, inbox=inbox, list_state=state))
-            return views
+        while True:
+            with self.knowledge._transaction() as connection:
+                deliveries = connection.execute(
+                    f"SELECT * FROM community_deliveries WHERE {scope} = ? ORDER BY delivered_at, id", (tenant,),
+                ).fetchall()
+                now = _timestamp()
+                states, due = [], []
+                for delivery in deliveries:
+                    try:
+                        events = self._events(connection, delivery)
+                    except KnowledgeError:
+                        # An invalid binding cannot establish the row's tenant scope.
+                        continue
+                    status, record_expiry = self._observed_state(delivery, events, now)
+                    if record_expiry:
+                        due.append(delivery["id"])
+                    states.append((delivery, (status, events)))
+                if not due:
+                    return [
+                        self._view(connection, delivery, now, inbox=inbox, list_state=state)
+                        for delivery, state in states
+                    ]
+
+            # Release the read snapshot before taking the writer lock. A competing
+            # request may have already closed the delivery, so check again in the write
+            # transaction and build the response from a fresh read snapshot afterward.
+            with self.knowledge._transaction(write=True) as connection:
+                now = _timestamp()
+                for delivery_id in due:
+                    try:
+                        delivery = self._delivery(connection, delivery_id, tenant, inbox=inbox)
+                        self._state(connection, delivery, now)
+                    except KnowledgeError:
+                        continue
 
     def withdraw(self, tenant: str, actor: str, delivery_id: str) -> dict[str, Any]:
         with self.knowledge._transaction(write=True) as connection:
@@ -402,23 +428,24 @@ class CommunityStore:
         view = {key: delivery[key] for key in (
             "id", "sender_tenant", "recipient_tenant", "knowledge_id", "version", "digest", "delivered_at", "expires_at",
         )}
-        if status == "verified" or (status == "unverified" and not inbox):
+        audience_allowed = self._allows(
+            delivery["sender_tenant"], delivery["publisher_id"], delivery["recipient_tenant"],
+        )
+        if status in ("unverified", "verified") and not audience_allowed:
+            status = "unavailable"
+        elif status == "verified" or (status == "unverified" and not inbox):
             try:
                 view["advisory"] = self._verified_envelope(connection, delivery, inbox=inbox)
             except KnowledgeError:
                 if list_state is None:
                     raise
                 status = "unavailable"
-        elif status == "unverified" and not self._allows(
-            delivery["sender_tenant"], delivery["publisher_id"], delivery["recipient_tenant"],
-        ):
-            status = "unavailable"
         view["status"] = status
 
-        validations, feedback = [], []
+        validations, feedback_by_sequence = [], {}
         rows = connection.execute(
             """
-            SELECT v.*, shared.occurred_at AS shared_at
+            SELECT v.*, shared.sequence AS shared_sequence, shared.occurred_at AS shared_at
             FROM community_validations AS v
             JOIN community_audit AS record
                 ON record.delivery_id = v.delivery_id AND record.validation_id = v.id
@@ -438,8 +465,11 @@ class CommunityStore:
                     **summary, "id": row["id"], "fixture_id": row["fixture_id"], "fixture_digest": row["fixture_digest"],
                     "fixture_scenario": row["fixture_scenario"], "recorded_at": row["recorded_at"],
                 })
-            if row["shared_at"] is not None:
-                feedback.append({**summary, "validation_id": row["id"], "shared_at": row["shared_at"]})
+            if row["shared_sequence"] is not None:
+                feedback_by_sequence[row["shared_sequence"]] = {
+                    **summary, "validation_id": row["id"], "shared_at": row["shared_at"],
+                }
+        feedback = [feedback_by_sequence[sequence] for sequence in sorted(feedback_by_sequence)]
         return {
             **view, "validations": validations, "feedback": feedback,
             "audit": [

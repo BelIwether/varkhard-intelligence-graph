@@ -3,7 +3,8 @@ import json
 import secrets
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from contextlib import closing, contextmanager
+from threading import Barrier
 
 import pytest
 from fastapi.testclient import TestClient
@@ -154,6 +155,27 @@ def test_explicit_two_tenant_exchange_and_minimized_feedback(community):
     assert [event["action"] for event in sent["audit"]] == ["delivered", "feedback_shared"]
 
 
+def test_feedback_history_follows_sharing_order(community, monkeypatch):
+    request, _, _ = community
+    delivery = send(request, approve(request, draft(request)))
+    inbox_url = f"{COMMUNITY}/inbox/{delivery['id']}"
+    body(request("POST", f"{inbox_url}/verify", "validator"), 200)
+    for scenario in ("positive", "negative"):
+        fixture = create_fixture(request, scenario)
+        recorded = body(request("POST", f"{inbox_url}/validate", "validator", json={"fixture_id": fixture["id"]}), 200)
+    first, second = [item["id"] for item in recorded["validations"]]
+
+    # Shares can have the same timestamp. Their audit sequence determines order.
+    monkeypatch.setattr(community_store, "_timestamp", lambda: recorded["validations"][-1]["recorded_at"])
+    for validation_id in (second, first):
+        shared = body(request("POST", f"{inbox_url}/feedback", "validator", json={"validation_id": validation_id}), 200)
+    sent, = body(request("GET", f"{COMMUNITY}/outbox", "publisher"), 200)
+    assert [item["id"] for item in shared["validations"]] == [first, second]
+    assert sent["validations"] == []
+    assert [item["validation_id"] for item in sent["feedback"]] == [second, first]
+    assert shared["feedback"] == sent["feedback"]
+
+
 def test_publish_verify_and_validation_enforce_role_tenant_and_exact_approval(community):
     request, _, _ = community
     advisory = draft(request)
@@ -212,6 +234,56 @@ def test_concurrent_publication_and_verify_replays_keep_one_delivery_and_audit(c
         assert connection.execute("SELECT count(*) FROM community_deliveries").fetchone() == (1,)
         assert connection.execute("SELECT count(*) FROM community_validations").fetchone() == (0,)
         assert connection.execute("SELECT count(*) FROM community_audit").fetchone() == (2,)
+
+
+def test_delivery_lists_only_need_writer_lock_for_new_expiries(community, monkeypatch):
+    request, database, _ = community
+    delivery = send(request, approve(request, draft(request)))
+    boxes = (("outbox", "publisher"), ("inbox", "validator"))
+
+    # An open writer transaction can coexist with reads in SQLite's rollback journal.
+    with closing(sqlite3.connect(database)) as writer, writer:
+        writer.execute("BEGIN IMMEDIATE")
+        for box, actor in boxes:
+            listed, = body(request("GET", f"{COMMUNITY}/{box}", actor), 200)
+            assert listed["status"] == "unverified"
+
+    monkeypatch.setattr(community_store, "_timestamp", lambda: delivery["expires_at"])
+    expired, = body(request("GET", f"{COMMUNITY}/inbox", "validator"), 200)
+    assert expired["status"] == "expired"
+    assert [event["action"] for event in expired["audit"]] == ["delivered", "expired"]
+    with closing(sqlite3.connect(database)) as writer, writer:
+        writer.execute("BEGIN IMMEDIATE")
+        for box, actor in boxes:
+            assert body(request("GET", f"{COMMUNITY}/{box}", actor), 200) == [expired]
+
+
+def test_concurrent_delivery_lists_record_one_expiry(community, monkeypatch):
+    request, database, _ = community
+    delivery = send(request, approve(request, draft(request)))
+    monkeypatch.setattr(community_store, "_timestamp", lambda: delivery["expires_at"])
+    before_writer_lock = Barrier(2)
+    transaction = community_store.KnowledgeStore._transaction
+
+    @contextmanager
+    def synchronize_expiry_writes(store, *, write=False):
+        if write:
+            before_writer_lock.wait(timeout=5)
+        with transaction(store, write=write) as connection:
+            yield connection
+
+    monkeypatch.setattr(community_store.KnowledgeStore, "_transaction", synchronize_expiry_writes)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        inbox = executor.submit(request, "GET", f"{COMMUNITY}/inbox", "validator")
+        outbox = executor.submit(request, "GET", f"{COMMUNITY}/outbox", "publisher")
+        incoming, = body(inbox.result(), 200)
+        outgoing, = body(outbox.result(), 200)
+
+    assert incoming == outgoing
+    assert incoming["status"] == "expired" and "advisory" not in incoming
+    assert [event["action"] for event in incoming["audit"]] == ["delivered", "expired"]
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT count(*) FROM community_audit WHERE action = 'expired'").fetchone() == (1,)
 
 
 @pytest.mark.parametrize("close_by", ["expiry", "withdrawal"])
@@ -318,33 +390,51 @@ def test_result_keeps_original_fixture_provenance_when_fixture_is_damaged(commun
     assert body(request("GET", f"{COMMUNITY}/inbox", "validator"), 200) == [recorded]
 
 
-def test_revoked_sender_audience_closes_verified_envelope_on_restart(community):
+@pytest.mark.parametrize("verified", [False, True])
+def test_revoked_audience_is_consistent_and_remains_withdrawable(community, verified):
     request, database, registry = community
     initial = approve(request, draft(request))
     delivery = send(request, initial)
     verify_path = f"{COMMUNITY}/inbox/{delivery['id']}/verify"
-    assert body(request("POST", verify_path, "validator"), 200)["advisory"]
+    if verified:
+        assert body(request("POST", verify_path, "validator"), 200)["advisory"]
     revision = body(request("POST", f"{KNOWLEDGE}/advisories/{initial['id']}/versions", "author", json={
         "version": initial["version"], "digest": initial["advisory"]["digest"],
     }), 201)
     authorized = send(request, approve(request, revision), "other-publisher")
 
-    token = secrets.token_urlsafe(32)
+    tokens = {actor: secrets.token_urlsafe(32) for actor in ("publisher", "other-publisher", "validator")}
     entries = json.loads(registry.read_text(encoding="utf-8"))
     for entry in entries:
-        if entry["actor_id"] == "publisher":
+        actor = entry["actor_id"]
+        if actor == "publisher":
             entry["community_recipients"] = []
-        elif entry["actor_id"] == "validator":
-            entry["token_sha256"] = hashlib.sha256(token.encode()).hexdigest()
+        if actor in tokens:
+            entry["token_sha256"] = hashlib.sha256(tokens[actor].encode()).hexdigest()
     registry.write_text(json.dumps(entries), encoding="utf-8")
-    headers = {"Authorization": f"Bearer {token}"}
-    with TestClient(create_app(knowledge_db=database, knowledge_identities=registry), headers=headers) as client:
-        rows = {item["id"]: item for item in body(client.get(f"{COMMUNITY}/inbox"), 200)}
-        assert rows[delivery["id"]]["status"] == "unavailable"
-        assert rows[delivery["id"]].get("advisory") is None
-        assert rows[authorized["id"]]["status"] == "unverified"
-        body(client.post(verify_path), 409)
-        assert body(client.post(f"{COMMUNITY}/inbox/{authorized['id']}/verify"), 200)["status"] == "verified"
+    with TestClient(create_app(knowledge_db=database, knowledge_identities=registry)) as client:
+        def request_after_restart(method, path, actor, **kwargs):
+            return client.request(method, path, headers={"Authorization": f"Bearer {tokens[actor]}"}, **kwargs)
+
+        for box, actor in (("outbox", "publisher"), ("inbox", "validator")):
+            rows = {item["id"]: item for item in body(request_after_restart("GET", f"{COMMUNITY}/{box}", actor), 200)}
+            assert rows[delivery["id"]]["status"] == "unavailable"
+            assert rows[delivery["id"]].get("advisory") is None
+            assert rows[authorized["id"]]["status"] == "unverified"
+        body(request_after_restart("POST", verify_path, "validator"), 409)
+        still_authorized = body(request_after_restart(
+            "POST", f"{COMMUNITY}/inbox/{authorized['id']}/verify", "validator",
+        ), 200)
+        assert still_authorized["status"] == "verified"
+        retried = body(request_after_restart(
+            "POST", f"{COMMUNITY}/outbox", "other-publisher", json=delivery_payload(initial),
+        ), 200)
+        assert retried["id"] == delivery["id"] and retried["status"] == "unavailable"
+        withdrawn = body(request_after_restart("POST", f"{COMMUNITY}/outbox/{delivery['id']}/withdraw", "publisher"), 200)
+        assert withdrawn["status"] == "withdrawn" and withdrawn["audit"][-1]["action"] == "withdrawn"
+        refreshed = body(request_after_restart("GET", f"{COMMUNITY}/inbox", "validator"), 200)
+        assert next(item for item in refreshed if item["id"] == delivery["id"])["status"] == "withdrawn"
+        body(request_after_restart("POST", verify_path, "validator"), 410)
 
 
 @pytest.mark.parametrize("audience", [["tenant-a"], ["unconfigured"], ["tenant-b", "tenant-b"]])

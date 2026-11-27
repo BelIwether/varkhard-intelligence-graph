@@ -80,7 +80,7 @@ function DeliveryCard({ delivery, fixtures, pending, onAction }: {
   const status = pastExpiry && delivery.status !== 'withdrawn' ? 'expired' : delivery.status
   const received = fixtures !== undefined
   const verified = status === 'verified'
-  const active = verified || status === 'unverified'
+  const canWithdraw = !received && status !== 'expired' && status !== 'withdrawn'
 
   return (
     <article className="knowledge-card community-delivery">
@@ -95,7 +95,7 @@ function DeliveryCard({ delivery, fixtures, pending, onAction }: {
         <div><dt>Delivered</dt><dd><time dateTime={delivery.delivered_at}>{formatTime(delivery.delivered_at)}</time></dd></div>
         <div><dt>Expires</dt><dd><time dateTime={delivery.expires_at}>{formatTime(delivery.expires_at)}</time></dd></div>
       </dl>
-      {!received && active && <button type="button" disabled={pending} onClick={() => onAction('withdraw')}>Withdraw delivery</button>}
+      {canWithdraw && <button type="button" disabled={pending} onClick={() => onAction('withdraw')}>Withdraw delivery</button>}
       {received && status === 'unverified' && (
         <div className="community-history">
           <p>Verify the registered sender, approved digest, permitted audience and expiry before opening this advisory.</p>
